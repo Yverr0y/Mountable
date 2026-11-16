@@ -4,7 +4,9 @@
 Usage:
     check_catalog.py [--online] [--jobs N] [--timeout SEC] [CATALOG]
 
-Without flags only the structure of the JSON file is checked. With --online
+Without flags only the structure of the JSON file is checked, including the
+optional "family" field: entries of one family must be adjacent, share
+category, name and arch, and have distinct versions. With --online
 every entry is additionally checked against its download server:
 
   * the URL (after redirects) answers HTTP 200,
@@ -71,7 +73,9 @@ IMAGE_KEYS = {
     "mode": str,
 }
 # Keys that may be left out of an image entry.
-IMAGE_OPTIONAL_KEYS = {"unpacked_size": int}
+IMAGE_OPTIONAL_KEYS = {"unpacked_size": int, "family": str}
+# Fields that every entry of a family must share.
+FAMILY_SHARED_KEYS = ("category", "name", "arch")
 
 USER_AGENT = "mountable-catalog-check/1"
 # Compressed bytes fetched to recover the first sector of a compressed image.
@@ -110,6 +114,49 @@ def check_keys(obj, spec, where, errors, optional=None):
             errors.append(f"{where}: unknown key '{key}'")
             ok = False
     return ok
+
+
+def check_families(images, errors):
+    """Check the entries that share a "family" value.
+
+    The app shows a family as one row with a version picker, so its entries
+    must sit next to each other (newest version first), agree on category,
+    name and arch, and differ in version.
+    """
+    first = {}      # family -> first entry seen
+    versions = {}   # family -> versions seen
+    previous = None
+    for image in images:
+        family = image.get("family") if isinstance(image, dict) else None
+        if not isinstance(family, str):
+            previous = None
+            continue
+        iid = image.get("id")
+        where = f"image '{iid}'"
+        if not ID_RE.match(family):
+            errors.append(f"{where}: family must match [a-z0-9-]+")
+        if family not in first:
+            first[family] = image
+            versions[family] = set()
+        else:
+            if previous != family:
+                errors.append(
+                    f"{where}: entries of family '{family}' must be adjacent"
+                )
+            head = first[family]
+            for key in FAMILY_SHARED_KEYS:
+                if image.get(key) != head.get(key):
+                    errors.append(
+                        f"{where}: {key} differs from '{head.get('id')}' "
+                        f"in family '{family}'"
+                    )
+        version = image.get("version")
+        if version in versions[family]:
+            errors.append(
+                f"{where}: duplicate version '{version}' in family '{family}'"
+            )
+        versions[family].add(version)
+        previous = family
 
 
 def validate(catalog):
@@ -236,6 +283,8 @@ def validate(catalog):
                 errors.append(f"{where}: unpacked_size must be a positive integer")
         if image["mode"] not in MODES:
             errors.append(f"{where}: mode must be 'disk' or 'cdrom'")
+
+    check_families(catalog["images"], errors)
 
     for cid in sorted(category_ids - used_categories):
         errors.append(f"category '{cid}': no images use it")

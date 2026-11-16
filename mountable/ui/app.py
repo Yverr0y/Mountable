@@ -477,17 +477,53 @@ def entry_state(app, entry):
 
 
 class CatalogList(ListScreen):
-    def __init__(self, app, category):
+    """A category's images. Versions of one system (a family) share a row that
+    opens a list of just those versions."""
+
+    def __init__(self, app, category, family=None):
         super().__init__(app)
         self.category = category
+        self.family = family
         self.title = category["name"]
 
     def refresh(self):
         entries = [e for e in self.app.load_catalog().get("images", []) if e["category"] == self.category["id"]]
-        self.rows = [(f"{e['name']}  {e.get('version', '')}", *entry_state(self.app, e), e) for e in entries]
+        if self.family:
+            entries = [e for e in entries if e.get("family") == self.family]
+            if entries:
+                self.title = entries[0]["name"]
+            self.rows = [(e.get("version", ""), *entry_state(self.app, e), e) for e in entries]
+            return
+        families = {}
+        for e in entries:
+            if e.get("family"):
+                families.setdefault(e["family"], []).append(e)
+        rows = []
+        for e in entries:
+            versions = families.get(e.get("family"), [])
+            if len(versions) < 2:
+                rows.append((f"{e['name']}  {e.get('version', '')}", *entry_state(self.app, e), e))
+            elif versions[0] is e:   # one row per family, at its newest version
+                rows.append((e["name"], *family_state(self.app, versions), e["family"]))
+        self.rows = rows
 
-    def activate(self, entry):
-        self.app.push(Entry(self.app, entry["id"]))
+    def activate(self, target):
+        if isinstance(target, str):
+            self.app.push(CatalogList(self.app, self.category, family=target))
+        else:
+            self.app.push(Entry(self.app, target["id"]))
+
+
+def family_state(app, versions):
+    """(label, colour) for a family row: activity first, else how many versions."""
+    states = [entry_state(app, e) for e in versions]
+    for label, color in states:
+        if color in (ACCENT, BAD):
+            return label, color
+    downloaded = sum(1 for _, color in states if color == GOOD)
+    if downloaded:
+        return f"✔ {downloaded} of {len(versions)}", GOOD
+    return f"{len(versions)} versions ›", None
 
 
 class Entry(Screen):
