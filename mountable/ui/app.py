@@ -148,6 +148,8 @@ class ListScreen(Screen):
 
     hints = "F/X move   Enter select   Esc back"
     empty = "Nothing here."
+    list_top = BODY_TOP   # where the rows start, and how many fit
+    list_rows = ROWS
 
     def __init__(self, app):
         super().__init__(app)
@@ -158,7 +160,7 @@ class ListScreen(Screen):
     def key(self, key):
         count = len(self.rows)
         if key in ("up", "down", "pageup", "pagedown") and count:
-            step = {"up": -1, "down": 1, "pageup": -ROWS, "pagedown": ROWS}[key]
+            step = {"up": -1, "down": 1, "pageup": -self.list_rows, "pagedown": self.list_rows}[key]
             if key in ("up", "down"):
                 self.index = (self.index + step) % count
             else:
@@ -179,20 +181,20 @@ class ListScreen(Screen):
         self.index = max(0, min(self.index, len(self.rows) - 1))
         if self.index < self.top:
             self.top = self.index
-        elif self.index >= self.top + ROWS:
-            self.top = self.index - ROWS + 1
-        for i, (label, right, color, _) in enumerate(self.rows[self.top:self.top + ROWS]):
-            y = BODY_TOP + i * ROW_H
+        elif self.index >= self.top + self.list_rows:
+            self.top = self.index - self.list_rows + 1
+        for i, (label, right, color, _) in enumerate(self.rows[self.top:self.top + self.list_rows]):
+            y = self.list_top + i * ROW_H
             selected = self.top + i == self.index
             if selected:
                 pygame.draw.rect(ui.surface, SELECTED, (3, y, WIDTH - 10, ROW_H - 2), border_radius=4)
             used = ui.text(right, (WIDTH - 14, y + 4), ui.small, color or DIM, align="right") if right else 0
             ui.text(label, (10, y + 3), ui.bold if selected else ui.font, TEXT, width=WIDTH - 34 - used)
-        if len(self.rows) > ROWS:   # scroll indicator
-            track = ROWS * ROW_H - 2
-            size = max(10, track * ROWS // len(self.rows))
-            offset = (track - size) * self.top // (len(self.rows) - ROWS)
-            pygame.draw.rect(ui.surface, DIM, (WIDTH - 4, BODY_TOP + offset, 2, size))
+        if len(self.rows) > self.list_rows:   # scroll indicator
+            track = self.list_rows * ROW_H - 2
+            size = max(10, track * self.list_rows // len(self.rows))
+            offset = (track - size) * self.top // (len(self.rows) - self.list_rows)
+            pygame.draw.rect(ui.surface, DIM, (WIDTH - 4, self.list_top + offset, 2, size))
 
 
 class Confirm(Screen):
@@ -222,8 +224,22 @@ class Confirm(Screen):
                     TEXT if active else DIM, align="center")
 
 
+def connection_summary(status):
+    """(text, colour): where a mounted image stands with the computer."""
+    if status.get("switch") == "host":
+        return "Flip switch to SLAVE", ACCENT
+    state = status.get("udc_state")
+    if state == "configured":
+        return "Connected to computer", GOOD
+    if state == "suspended":
+        return "Connected, computer idle", GOOD
+    return "Not plugged in", ACCENT
+
+
 class Home(ListScreen):
-    hints = "F/X move   Enter select   Esc exit"
+    BANNER_H = 42
+    list_top = BODY_TOP + BANNER_H + 2
+    list_rows = (HEIGHT - FOOTER_H - list_top) // ROW_H
 
     def header_right(self):
         free = self.app.status.get("free")
@@ -232,9 +248,12 @@ class Home(ListScreen):
     def refresh(self):
         status = self.app.status
         rows = []
-        mounted = status.get("mounted")
-        if mounted:
-            rows.append((f"● {os.path.basename(mounted['path'])}", "mounted", GOOD, "status"))
+        if status.get("mounted"):
+            rows.append(("Unmount", "", None, "unmount"))
+            rows.append(("Connection status", "", None, "status"))
+            self.hints = "F/X move   Enter select   U unmount   Esc exit"
+        else:
+            self.hints = "F/X move   Enter select   Esc exit"
         rows.append(("My images", str(self.app.image_count), None, "images"))
         rows.append(("Download images", "", None, "catalog"))
         downloads = status.get("downloads", [])
@@ -243,18 +262,43 @@ class Home(ListScreen):
             label = download_label(active[0]) if active else f"{len(downloads)} finished"
             rows.append(("Downloads", label, ACCENT if active else None, "downloads"))
         rows.append(("About", "", None, "about"))
+        if [r[3] for r in rows] != [r[3] for r in self.rows]:
+            self.index = self.top = 0   # the menu changed shape; do not leave the cursor on a different action
         self.rows = rows
 
     def key(self, key):
         if key == "esc":
             self.app.running = False
+        elif key == "u":
+            self.app.confirm_unmount()
         elif key != "left":
             super().key(key)
 
     def activate(self, target):
+        if target == "unmount":
+            self.app.confirm_unmount()
+            return
         screens = {"status": Status, "images": Images, "catalog": Categories,
                    "downloads": Downloads, "about": About}
         self.app.push(screens[target](self.app))
+
+    def body(self, ui):
+        status = self.app.status
+        mounted = status.get("mounted")
+        rect = pygame.Rect(4, BODY_TOP, WIDTH - 8, self.BANNER_H)
+        pygame.draw.rect(ui.surface, PANEL, rect, border_radius=6)
+        if mounted:
+            pygame.draw.rect(ui.surface, GOOD, rect, 2, border_radius=6)
+            ui.text("● MOUNTED", (rect.x + 9, rect.y + 5), ui.small, GOOD)
+            text, color = connection_summary(status)
+            ui.text(text, (rect.right - 9, rect.y + 5), ui.small, color, align="right")
+            ui.text(os.path.basename(mounted["path"]), (rect.x + 9, rect.y + 20), ui.big, TEXT,
+                    width=rect.w - 18)
+        else:
+            ui.text("Nothing mounted", (rect.x + 9, rect.y + 5), ui.bold, DIM)
+            ui.text("Choose an image to present it as a USB drive.", (rect.x + 9, rect.y + 23),
+                    ui.small, DIM, width=rect.w - 18)
+        super().body(ui)
 
 
 class About(Screen):
@@ -281,15 +325,8 @@ class Status(Screen):
     def key(self, key):
         mounted = self.app.status.get("mounted")
         if key in ("u", "enter") and mounted:
-            name = os.path.basename(mounted["path"])
-            self.app.push(Confirm(self.app, "Unmount", f"Unmount {name}? A computer using it will lose the drive.",
-                                  self.unmount, yes="Unmount"))
+            self.app.confirm_unmount(then=self.app.pop)
         elif key in ("esc", "left"):
-            self.app.pop()
-
-    def unmount(self):
-        if self.app.request("unmount") is not None:
-            self.app.toast("Unmounted")
             self.app.pop()
 
     def draw(self, ui):
@@ -406,9 +443,7 @@ class ImageActions(ListScreen):
         if action == "status":
             app.push(Status(app))
         elif action == "unmount":
-            if app.request("unmount") is not None:
-                app.toast("Unmounted")
-                app.pop()
+            app.confirm_unmount(then=app.pop)
         elif action == "delete":
             app.push(Confirm(app, "Delete", f"Delete {image['name']}? This cannot be undone.",
                              self.delete, yes="Delete"))
@@ -650,6 +685,25 @@ class App:
         if len(self.stack) > 1:
             self.stack.pop()
             self.stack[-1].refresh()
+
+    def confirm_unmount(self, then=None):
+        """Ask before unmounting; warn harder when a computer is using the drive."""
+        mounted = self.status.get("mounted")
+        if not mounted:
+            return
+        name = os.path.basename(mounted["path"])
+        if self.status.get("switch") != "host" and self.status.get("udc_state") == "configured":
+            message = f"A computer is using {name}. Unmounting now can crash it or lose its data. Unmount anyway?"
+        else:
+            message = f"Unmount {name}?"
+
+        def unmount():
+            if self.request("unmount") is not None:
+                self.toast("Unmounted")
+                if then:
+                    then()
+
+        self.push(Confirm(self, "Unmount", message, unmount, yes="Unmount"))
 
     def toast(self, message, error=False):
         self._toast = (message, time.monotonic() + (4 if error else 2), BAD if error else GOOD)
