@@ -345,6 +345,21 @@ class Status(Screen):
 
 class Images(ListScreen):
     title = "My images"
+    hints = "Enter options   D delete   Esc back"
+
+    def key(self, key):
+        if key == "d" and self.rows:
+            image = self.rows[self.index][3]
+            self.app.push(Confirm(self.app, "Delete", f"Delete {image['name']}? This cannot be undone.",
+                                  lambda: self.delete(image), yes="Delete"))
+        else:
+            super().key(key)
+
+    def delete(self, image):
+        if self.app.request("delete", name=image["name"]) is not None:
+            self.app.catalog = {}   # its catalog entry is no longer installed
+            self.app.toast("Deleted")
+            self.refresh()
 
     def refresh(self):
         reply = self.app.request("images")
@@ -417,6 +432,7 @@ class ImageActions(ListScreen):
 
     def delete(self):
         if self.app.request("delete", name=self.image["name"]) is not None:
+            self.app.catalog = {}   # its catalog entry is no longer installed
             self.app.toast("Deleted")
             self.app.pop()
 
@@ -493,7 +509,7 @@ class Entry(Screen):
         if self.download and self.download["state"] in ACTIVE_STATES:
             self.hints = "Enter cancel download   Esc back"
         elif self.entry and self.entry.get("installed"):
-            self.hints = "Enter mount   Esc back"
+            self.hints = "Enter mount or delete   Esc back"
         else:
             self.hints = "Enter download   Esc back"
 

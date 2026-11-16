@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated": "2026-11-15",
+  "updated": "2026-11-16",
   "categories": [
     {
       "id": "linux",
@@ -971,6 +971,22 @@
       "sha256": "cd440cd165f5a8a184870cb615f525af182660c15f9bcf1e9d198ca19cedcaff",
       "compression": "zip",
       "unpacked_size": 1073741824,
+      "mode": "disk"
+    },
+    {
+      "id": "steamos-deck-recovery",
+      "name": "SteamOS (Steam Deck)",
+      "version": "3.8.14",
+      "category": "gaming",
+      "arch": "x86_64",
+      "description": "Valve's recovery image for re-imaging a Steam Deck; not supported on ordinary PCs",
+      "homepage": "https://help.steampowered.com/en/faqs/view/1B71-EDF2-EB6D-2BB3",
+      "url": "https://steamdeck-images.steamos.cloud/recovery/steamdeck-oobe-repair-20260707.10-3.8.14.img.bz2",
+      "filename": "steamdeck-oobe-repair-20260707.10-3.8.14.img.bz2",
+      "size": 3357999306,
+      "sha256": "4254ee02ec34ae8add9aceef1881a2ce675a9d0176171df92e0eaa1bf014c594",
+      "compression": "bz2",
+      "unpacked_size": 8120172544,
       "mode": "disk"
     },
     {
