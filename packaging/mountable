@@ -1,0 +1,4 @@
+#!/bin/sh
+# Launches the Mountable user interface on the built-in screen.
+export PYTHONPATH=/opt/mountable
+exec /usr/bin/python3 -m mountable.ui "$@"

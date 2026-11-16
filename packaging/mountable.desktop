@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Mountable
+Comment=Boot computers from disk images over USB
+Exec=/usr/bin/mountable
+Icon=/usr/share/APPLaunch/share/images/mountable.png
+Terminal=false
+Categories=Utility;
+StartupNotify=false
