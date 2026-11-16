@@ -22,7 +22,7 @@ python3 -m compileall -q "$PREFIX/mountable"
 
 install -m 755 packaging/mountable /usr/bin/mountable
 install -m 644 packaging/mountable.service /etc/systemd/system/mountable.service
-[ -e /etc/mountable/config.json ] || echo '{ "catalog_url": "" }' > /etc/mountable/config.json
+[ -e /etc/mountable/config.json ] || echo '{}' > /etc/mountable/config.json
 
 if [ -d "$LAUNCHER/applications" ]; then
     install -m 644 packaging/mountable.png "$LAUNCHER/share/images/mountable.png"

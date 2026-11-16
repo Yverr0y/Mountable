@@ -26,11 +26,22 @@ Your own images go in `/srv/mountable/images`.
 While an image is mounted the device's adb connection is paused; it comes back
 when you unmount.
 
+## Settings
+
+Settings are in the app's menu:
+
+- Auto-unmount after a set time
+- Mount disk images read-only or writable by default
+- An image to mount whenever the app opens (set from an image's options)
+- A files drive: an extra FAT32 or exFAT USB drive presented next to the
+  mounted image, or on its own, for carrying drivers and other files
+
 ## Catalog
 
-The download list is `catalog/catalog.json`. To have devices pick up catalog
-changes without an app update, publish that file and set its URL as
-`catalog_url` in `/etc/mountable/config.json`.
+The download list is `catalog/catalog.json`. Devices fetch the published copy
+when they start and once a day, and from Settings on request, so the list can
+change without an app update. The URL is `catalog_url` in
+`/etc/mountable/config.json`; it must be reachable without a login.
 
 Check the catalog after editing it:
 

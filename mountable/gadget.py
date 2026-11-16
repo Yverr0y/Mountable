@@ -2,17 +2,18 @@
 
 import subprocess
 import threading
+import time
 from pathlib import Path
 
-from .config import RUN_DIR
+from .config import FILES_DRIVE, RUN_DIR
 
 CONFIGFS = Path("/sys/kernel/config")
 GADGETS = CONFIGFS / "usb_gadget"
 GADGET = GADGETS / "mountable"
 FUNC = GADGET / "functions" / "mass_storage.usb0"
 CONF = GADGET / "configs" / "c.1"
-LUN = FUNC / "lun.0"
 PAUSED = RUN_DIR / "paused-gadgets"
+MOUNTED_AT = RUN_DIR / "mounted-at"
 
 # The OS image runs its own gadget (adb) on the controller, managed by these
 # services. Only one gadget can be bound at a time, so they are stopped while
@@ -62,14 +63,32 @@ def host_devices():
     return found
 
 
+def _uptime():
+    # Keeps counting across service restarts and suspend, unlike the wall clock.
+    return time.clock_gettime(time.CLOCK_BOOTTIME)
+
+
 def mounted():
-    if not LUN.is_dir():
+    """What is being presented: the image, if any, and whether the files drive is."""
+    if not FUNC.is_dir():
         return None
-    return {
-        "path": _read(LUN / "file"),
-        "mode": "cdrom" if _read(LUN / "cdrom") == "1" else "disk",
-        "writable": _read(LUN / "ro") == "0",
-    }
+    state = {"path": "", "mode": "disk", "writable": False, "files_drive": False}
+    for lun in sorted(FUNC.glob("lun.*")):
+        path = _read(lun / "file")
+        if path == str(FILES_DRIVE):
+            state["files_drive"] = True
+        elif path:
+            state.update(path=path, mode="cdrom" if _read(lun / "cdrom") == "1" else "disk",
+                         writable=_read(lun / "ro") == "0")
+    return state
+
+
+def mounted_seconds():
+    """How long the current mount has been up, or None."""
+    try:
+        return max(0.0, _uptime() - float(MOUNTED_AT.read_text()))
+    except (OSError, ValueError):
+        return None
 
 
 def status():
@@ -128,25 +147,36 @@ def _teardown():
         except OSError:
             pass
         (CONF / "mass_storage.usb0").unlink(missing_ok=True)
-        for d in (CONF / "strings" / "0x409", CONF, FUNC, GADGET / "strings" / "0x409", GADGET):
+        extra_luns = [d for d in FUNC.glob("lun.*") if d.name != "lun.0"]
+        for d in (CONF / "strings" / "0x409", CONF, *extra_luns, FUNC, GADGET / "strings" / "0x409", GADGET):
             try:
                 d.rmdir()
             except OSError:
                 pass
         if GADGET.is_dir():
             raise GadgetError("could not remove the USB gadget")
+    MOUNTED_AT.unlink(missing_ok=True)
     _resume_others()
 
 
-def mount(path, mode="disk", writable=False):
-    """Expose the file at `path` as a USB drive (mode "disk") or CD-ROM."""
-    path = Path(path)
-    cdrom = mode == "cdrom"
+def mount(path=None, mode="disk", writable=False, files_drive=None):
+    """Present an image (as "disk" or "cdrom"), the files drive, or both.
+
+    The image is always the first unit, which is the one firmware boots from.
+    """
+    units = []   # (file, cdrom, read-only)
+    if path:
+        units.append((Path(path), mode == "cdrom", not writable or mode == "cdrom"))
+    if files_drive:
+        units.append((Path(files_drive), False, False))
     with _lock:
         if GADGET.is_dir():
-            raise GadgetError("an image is already mounted")
-        if not path.is_file():
-            raise GadgetError(f"no such image: {path.name}")
+            raise GadgetError("something is already mounted")
+        if not units:
+            raise GadgetError("nothing to mount")
+        for file, _, _ in units:
+            if not file.is_file():
+                raise GadgetError(f"no such image: {file.name}")
         subprocess.run(["modprobe", "libcomposite"], capture_output=True)
         if not GADGETS.is_dir():
             subprocess.run(["mount", "-t", "configfs", "none", str(CONFIGFS)], capture_output=True)
@@ -172,13 +202,17 @@ def mount(path, mode="disk", writable=False):
             _write(CONF / "MaxPower", "250")
             FUNC.mkdir()
             _write(FUNC / "stall", "0")
-            _write(LUN / "removable", "1")
-            _write(LUN / "cdrom", "1" if cdrom else "0")
-            _write(LUN / "ro", "0" if writable and not cdrom else "1")
-            _write(LUN / "file", path)
+            for n, (file, cdrom, read_only) in enumerate(units):
+                lun = FUNC / f"lun.{n}"
+                lun.mkdir(exist_ok=True)   # lun.0 comes with the function
+                _write(lun / "removable", "1")
+                _write(lun / "cdrom", "1" if cdrom else "0")
+                _write(lun / "ro", "1" if read_only else "0")
+                _write(lun / "file", file)
             (CONF / "mass_storage.usb0").symlink_to(FUNC)
             _pause_others(udc)
             _write(GADGET / "UDC", udc)
+            MOUNTED_AT.write_text(str(_uptime()))
         except OSError as e:
             try:
                 _teardown()

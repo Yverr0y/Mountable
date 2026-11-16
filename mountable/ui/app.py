@@ -6,6 +6,7 @@ import time
 
 from .. import __version__
 from ..client import ServiceError, call
+from ..config import CHOICES
 from . import display
 from .display import HEIGHT, WIDTH, pygame
 
@@ -35,6 +36,25 @@ def human_size(n):
             return f"{n:.0f} {unit}"
         n /= 1024
     return f"{n:.1f} GB" if n < 100 else f"{n:.0f} GB"
+
+
+def mounted_name(mounted):
+    return os.path.basename(mounted["path"]) if mounted.get("path") else "Files drive"
+
+
+def minutes_label(minutes):
+    if not minutes:
+        return "off"
+    if minutes < 60:
+        return f"{minutes} min"
+    return "1 hour" if minutes == 60 else f"{minutes // 60} hours"
+
+
+def megabytes_label(mb):
+    return f"{mb} MB" if mb < 1024 else f"{mb // 1024} GB"
+
+
+FORMAT_LABEL = {"fat32": "FAT32", "exfat": "exFAT"}
 
 
 def download_label(d):
@@ -188,7 +208,8 @@ class ListScreen(Screen):
             selected = self.top + i == self.index
             if selected:
                 pygame.draw.rect(ui.surface, SELECTED, (3, y, WIDTH - 10, ROW_H - 2), border_radius=4)
-            used = ui.text(right, (WIDTH - 14, y + 4), ui.small, color or DIM, align="right") if right else 0
+            used = ui.text(right, (WIDTH - 14, y + 4), ui.small, color or DIM, width=170,
+                           align="right") if right else 0
             ui.text(label, (10, y + 3), ui.bold if selected else ui.font, TEXT, width=WIDTH - 34 - used)
         if len(self.rows) > self.list_rows:   # scroll indicator
             track = self.list_rows * ROW_H - 2
@@ -256,12 +277,14 @@ class Home(ListScreen):
             self.hints = "F/X move   Enter select   Esc exit"
         rows.append(("My images", str(self.app.image_count), None, "images"))
         rows.append(("Download images", "", None, "catalog"))
+        if not status.get("mounted") and self.app.settings.get("files_drive"):
+            rows.append(("Mount files drive only", "", None, "files"))
         downloads = status.get("downloads", [])
         if downloads:
             active = [d for d in downloads if d["state"] in ACTIVE_STATES]
             label = download_label(active[0]) if active else f"{len(downloads)} finished"
             rows.append(("Downloads", label, ACCENT if active else None, "downloads"))
-        rows.append(("About", "", None, "about"))
+        rows.append(("Settings", "", None, "settings"))
         if [r[3] for r in rows] != [r[3] for r in self.rows]:
             self.index = self.top = 0   # the menu changed shape; do not leave the cursor on a different action
         self.rows = rows
@@ -278,8 +301,12 @@ class Home(ListScreen):
         if target == "unmount":
             self.app.confirm_unmount()
             return
+        if target == "files":
+            if self.app.request("mount", files_only=True) is not None:
+                self.app.push(Status(self.app))
+            return
         screens = {"status": Status, "images": Images, "catalog": Categories,
-                   "downloads": Downloads, "about": About}
+                   "downloads": Downloads, "settings": Settings}
         self.app.push(screens[target](self.app))
 
     def body(self, ui):
@@ -289,16 +316,83 @@ class Home(ListScreen):
         pygame.draw.rect(ui.surface, PANEL, rect, border_radius=6)
         if mounted:
             pygame.draw.rect(ui.surface, GOOD, rect, 2, border_radius=6)
-            ui.text("● MOUNTED", (rect.x + 9, rect.y + 5), ui.small, GOOD)
+            label = "● MOUNTED"
+            if mounted["files_drive"] and mounted["path"]:
+                label += " + FILES"
+            remaining = status.get("auto_unmount_in")
+            if remaining is not None:
+                label += f" · {max(1, round(remaining / 60))} min left"
+            ui.text(label, (rect.x + 9, rect.y + 5), ui.small, GOOD)
             text, color = connection_summary(status)
             ui.text(text, (rect.right - 9, rect.y + 5), ui.small, color, align="right")
-            ui.text(os.path.basename(mounted["path"]), (rect.x + 9, rect.y + 20), ui.big, TEXT,
-                    width=rect.w - 18)
+            ui.text(mounted_name(mounted), (rect.x + 9, rect.y + 20), ui.big, TEXT, width=rect.w - 18)
         else:
             ui.text("Nothing mounted", (rect.x + 9, rect.y + 5), ui.bold, DIM)
             ui.text("Choose an image to present it as a USB drive.", (rect.x + 9, rect.y + 23),
                     ui.small, DIM, width=rect.w - 18)
         super().body(ui)
+
+
+class Settings(ListScreen):
+    title = "Settings"
+    hints = "F/X move   Enter change   Esc back"
+
+    def header_right(self):
+        return "", DIM
+
+    def refresh(self):
+        s = self.app.settings
+        drive = self.app.status.get("files_drive")
+        wanted = (s.get("files_drive_format"), s.get("files_drive_size_mb"))
+        if not drive:
+            actual, colour = "not created", None
+        else:
+            actual = f"{FORMAT_LABEL[drive['format']]} {megabytes_label(drive['size_mb'])}"
+            # Format and size only take effect when the drive is created again.
+            colour = None if (drive["format"], drive["size_mb"]) == wanted else ACCENT
+        updated = self.app.load_catalog().get("updated", "")
+        self.rows = [
+            ("Auto-unmount", minutes_label(s.get("auto_unmount_minutes")), None, "auto_unmount_minutes"),
+            ("Mount disk images", "writable" if s.get("default_writable") else "read-only", None,
+             "default_writable"),
+            ("Image mounted on open", s.get("default_image") or "none", None, "default_image"),
+            ("Files drive", "on" if s.get("files_drive") else "off", None, "files_drive"),
+            ("Files drive format", FORMAT_LABEL.get(s.get("files_drive_format"), ""), None,
+             "files_drive_format"),
+            ("Files drive size", megabytes_label(s.get("files_drive_size_mb", 0)), None,
+             "files_drive_size_mb"),
+            ("Erase files drive", actual if colour is None else f"now {actual}", colour, "erase"),
+            ("Update image list", updated, None, "catalog"),
+            ("About", __version__, None, "about"),
+        ]
+
+    def activate(self, key):
+        app = self.app
+        if key == "about":
+            app.push(About(app))
+        elif key == "catalog":
+            if app.request("catalog_refresh") is not None:
+                app.catalog = {}
+                app.toast("Image list updated")
+        elif key == "erase":
+            app.push(Confirm(app, "Erase files drive",
+                             "Create a new, empty files drive with the current format and size? "
+                             "Everything on it is erased.", self.erase, yes="Erase"))
+        elif key == "default_image":
+            if not app.settings.get("default_image"):
+                app.toast("Choose one from an image's options")
+            elif app.request("set", key=key, value="") is not None:
+                app.toast("No image mounts on open")
+        else:
+            choices = CHOICES[key]
+            value = choices[(choices.index(app.settings[key]) + 1) % len(choices)]
+            if app.request("set", key=key, value=value) is not None and key.startswith("files_drive"):
+                if key == "files_drive" and app.status.get("mounted"):
+                    app.toast("Applies the next time you mount")
+
+    def erase(self):
+        if self.app.request("drive_create", timeout=120) is not None:
+            self.app.toast("Files drive erased")
 
 
 class About(Screen):
@@ -354,7 +448,11 @@ class Status(Screen):
             return
         kind = "CD-ROM" if mounted["mode"] == "cdrom" else "USB disk"
         access = "writable" if mounted["writable"] else "read-only"
-        ui.text(os.path.basename(mounted["path"]), (WIDTH // 2, BODY_TOP + 4), ui.bold, TEXT,
+        if not mounted["path"]:
+            access = "writable"
+        elif mounted["files_drive"]:
+            access += " · + files drive"
+        ui.text(mounted_name(mounted), (WIDTH // 2, BODY_TOP + 4), ui.bold, TEXT,
                 width=WIDTH - 20, align="center")
         ui.text(f"{kind} · {access}", (WIDTH // 2, BODY_TOP + 20), ui.small, DIM, align="center")
 
@@ -431,10 +529,19 @@ class ImageActions(ListScreen):
             return
         other = "cdrom" if image["mode"] == "disk" else "disk"
         label = {"disk": "USB disk", "cdrom": "CD-ROM"}
-        rows = [(f"Mount as {label[image['mode']]}", "read-only", None, (image["mode"], False))]
-        if image["kind"] != "iso":
-            rows.append(("Mount writable", "changes are saved", None, ("disk", True)))
+        read_only = (f"Mount as {label[image['mode']]}", "read-only", None, (image["mode"], False))
+        writable = ("Mount writable", "changes are saved", None, ("disk", True))
+        if image["kind"] == "iso":
+            rows = [read_only]
+        elif self.app.settings.get("default_writable"):
+            rows = [writable, read_only]
+        else:
+            rows = [read_only, writable]
         rows.append((f"Mount as {label[other]}", "read-only", None, (other, False)))
+        if self.app.settings.get("default_image") == image["name"]:
+            rows.append(("Stop mounting when the app opens", "default", GOOD, "undefault"))
+        else:
+            rows.append(("Mount when the app opens", "", None, "default"))
         rows.append(("Delete", human_size(image["size"]), None, "delete"))
         self.rows = rows
 
@@ -447,11 +554,15 @@ class ImageActions(ListScreen):
         elif action == "delete":
             app.push(Confirm(app, "Delete", f"Delete {image['name']}? This cannot be undone.",
                              self.delete, yes="Delete"))
+        elif action in ("default", "undefault"):
+            value = image["name"] if action == "default" else ""
+            if app.request("set", key="default_image", value=value) is not None:
+                app.toast("Will mount when the app opens" if value else "No longer the default")
         else:
             mode, writable = action
             current = app.status.get("mounted")
             if current:
-                name = os.path.basename(current["path"])
+                name = mounted_name(current)
                 app.push(Confirm(app, "Replace", f"Unmount {name} and mount this image instead?",
                                  lambda: self.mount(mode, writable, replace=True), yes="Replace"))
             else:
@@ -676,6 +787,20 @@ class App:
         except ServiceError:
             pass
         self.push(Home(self))
+        self.mount_default_image()
+
+    @property
+    def settings(self):
+        return self.status.get("settings", {})
+
+    def mount_default_image(self):
+        """Mount the image chosen in settings when the app opens with nothing mounted."""
+        name = self.settings.get("default_image")
+        if not name or self.status.get("mounted") or self.service_down:
+            return
+        writable = bool(self.settings.get("default_writable")) and not name.lower().endswith(".iso")
+        if self.request("mount", name=name, writable=writable) is not None:
+            self.push(Status(self))
 
     def push(self, screen):
         self.stack.append(screen)
@@ -691,7 +816,7 @@ class App:
         mounted = self.status.get("mounted")
         if not mounted:
             return
-        name = os.path.basename(mounted["path"])
+        name = mounted_name(mounted)
         if self.status.get("switch") != "host" and self.status.get("udc_state") == "configured":
             message = f"A computer is using {name}. Unmounting now can crash it or lose its data. Unmount anyway?"
         else:
@@ -708,10 +833,10 @@ class App:
     def toast(self, message, error=False):
         self._toast = (message, time.monotonic() + (4 if error else 2), BAD if error else GOOD)
 
-    def request(self, cmd, **params):
+    def request(self, cmd, timeout=30, **params):
         """Call the service; on failure show the error and return None."""
         try:
-            reply = call(cmd, **params)
+            reply = call(cmd, timeout=timeout, **params)
         except ServiceError as e:
             self.toast(str(e), error=True)
             return None
