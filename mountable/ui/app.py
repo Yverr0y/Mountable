@@ -404,10 +404,12 @@ class About(Screen):
         ui.text(f"Mountable {__version__}", (10, BODY_TOP + 6), ui.big)
         y = ui.paragraph("Presents disk images over USB so a computer can boot from them.",
                          (10, BODY_TOP + 30), WIDTH - 20, color=DIM)
-        ui.text("Add your own images to:", (10, y + 8), ui.small, DIM)
-        ui.text(status.get("images_dir", ""), (10, y + 21), ui.font, TEXT, width=WIDTH - 20)
+        ui.text("Images:", (10, y + 6), ui.small, DIM)
+        ui.text(status.get("images_dir", ""), (70, y + 5), ui.font, TEXT, width=WIDTH - 80)
+        ui.text("Files drive:", (10, y + 24), ui.small, DIM)
+        ui.text(status.get("shared_dir", ""), (70, y + 23), ui.font, TEXT, width=WIDTH - 80)
         if "free" in status:
-            ui.text(f"{human_size(status['free'])} free", (10, y + 40), ui.small, DIM)
+            ui.text(f"{human_size(status['free'])} free", (10, y + 42), ui.small, DIM)
 
 
 class Status(Screen):

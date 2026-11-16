@@ -15,7 +15,7 @@ import threading
 import time
 
 from . import catalog, drive, gadget, images
-from .config import (ACCESS_GROUP, CHOICES, IMAGES_DIR, RUN_DIR, SOCKET_PATH,
+from .config import (ACCESS_GROUP, CHOICES, IMAGES_DIR, RUN_DIR, SHARED_DIR, SOCKET_PATH,
                      load_settings, save_setting)
 from .downloads import DownloadManager
 
@@ -46,6 +46,7 @@ def cmd_status(_):
     state["images_dir"] = str(IMAGES_DIR)
     state["settings"] = {k: v for k, v in settings.items() if k != "catalog_url"}
     state["files_drive"] = drive.info()
+    state["shared_dir"] = str(SHARED_DIR)
     state["auto_unmount_in"] = _auto_unmount_in(settings) if state["mounted"] else None
     return state
 
@@ -68,11 +69,30 @@ def cmd_mount(request):
     files = None
     if request.get("files_only") or settings["files_drive"]:
         files = drive.ensure(settings["files_drive_format"], settings["files_drive_size_mb"])
-    return gadget.mount(path, mode or "disk", writable, files)
+        drive.detach()   # a computer is about to own the filesystem
+    try:
+        return gadget.mount(path, mode or "disk", writable, files)
+    except gadget.GadgetError:
+        _sync_shared_folder()
+        raise
+
+
+def _sync_shared_folder():
+    """Attach the files drive at the shared folder exactly when that is safe."""
+    current = gadget.mounted()
+    try:
+        if load_settings()["files_drive"] and not (current and current["files_drive"]):
+            drive.attach()
+        else:
+            drive.detach()
+    except drive.DriveError:
+        pass
 
 
 def cmd_unmount(_):
-    return gadget.unmount()
+    state = gadget.unmount()
+    _sync_shared_folder()
+    return state
 
 
 def cmd_delete(request):
@@ -95,9 +115,11 @@ def cmd_set(request):
     elif key not in CHOICES or value not in CHOICES[key] or type(value) is not type(CHOICES[key][0]):
         raise ValueError("invalid setting")
     save_setting(key, value)
-    if key == "files_drive" and value:
-        settings = load_settings()
-        drive.ensure(settings["files_drive_format"], settings["files_drive_size_mb"])
+    if key == "files_drive":
+        if value:
+            settings = load_settings()
+            drive.ensure(settings["files_drive_format"], settings["files_drive_size_mb"])
+        _sync_shared_folder()
     return {}
 
 
@@ -107,7 +129,10 @@ def cmd_drive_create(_):
     if current and current["files_drive"]:
         raise ValueError("the files drive is mounted; unmount first")
     settings = load_settings()
-    drive.create(settings["files_drive_format"], settings["files_drive_size_mb"])
+    try:
+        drive.create(settings["files_drive_format"], settings["files_drive_size_mb"])
+    finally:
+        _sync_shared_folder()
     return {}
 
 
@@ -171,6 +196,7 @@ def _auto_unmounter():
         try:
             if gadget.mounted() and _auto_unmount_in(load_settings()) == 0:
                 gadget.unmount()
+                _sync_shared_folder()
         except (gadget.GadgetError, OSError):
             pass
 
@@ -210,6 +236,7 @@ def main():
     for stale in IMAGES_DIR.glob("*.unpack"):
         stale.unlink()
 
+    _sync_shared_folder()
     threading.Thread(target=_catalog_updater, daemon=True).start()
     threading.Thread(target=_auto_unmounter, daemon=True).start()
 

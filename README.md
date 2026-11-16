@@ -36,6 +36,10 @@ Settings are in the app's menu:
 - A files drive: an extra FAT32 or exFAT USB drive presented next to the
   mounted image, or on its own, for carrying drivers and other files
 
+While the files drive is not being presented over USB, its contents are in
+`/srv/mountable/shared`. Copy files there and they are on the drive at the
+next mount; files a computer saved to the drive appear there after unmounting.
+
 ## Catalog
 
 The download list is `catalog/catalog.json`. Devices fetch the published copy

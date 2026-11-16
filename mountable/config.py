@@ -19,6 +19,9 @@ IMAGE_EXTENSIONS = {".iso", ".img", ".raw", ".dd", ".bin", ".ima", ".dsk", ".hdd
 
 # The optional extra drive for carrying files next to a mounted image.
 FILES_DRIVE = IMAGES_DIR.parent / "files-drive.img"
+# Where the files drive's contents appear on this device while it is not being
+# presented over USB. Files copied here travel on the drive.
+SHARED_DIR = IMAGES_DIR.parent / "shared"
 
 CATALOG_URL = "https://raw.githubusercontent.com/s0liton/Mountable/main/catalog/catalog.json"
 

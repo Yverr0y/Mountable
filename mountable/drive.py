@@ -2,12 +2,19 @@
 
 It is presented over USB next to a mounted image (or on its own) so files such
 as drivers and installers can travel with the image.
+
+A filesystem must only be used from one side at a time. While the drive is not
+presented over USB it is attached at SHARED_DIR, where files can be added and
+read on this device; it is detached before a computer gets it.
 """
+
+import grp
+import os
 
 import shutil
 import subprocess
 
-from .config import FILES_DRIVE
+from .config import ACCESS_GROUP, FILES_DRIVE, SHARED_DIR
 
 LABEL = "MOUNTABLE"
 FORMATS = {
@@ -35,6 +42,7 @@ def create(fmt, size_mb):
     """Create the drive, replacing any existing one and everything on it."""
     if fmt not in FORMATS:
         raise DriveError("unknown format")
+    detach()
     size = size_mb * 1024 * 1024
     existing = FILES_DRIVE.stat().st_size if FILES_DRIVE.exists() else 0
     if shutil.disk_usage(FILES_DRIVE.parent).free + existing < size + 64 * 1024 * 1024:
@@ -59,3 +67,32 @@ def ensure(fmt, size_mb):
     if not FILES_DRIVE.exists():
         create(fmt, size_mb)
     return FILES_DRIVE
+
+
+def attached():
+    return os.path.ismount(SHARED_DIR)
+
+
+def attach():
+    """Make the drive's contents available at SHARED_DIR."""
+    if not FILES_DRIVE.exists() or attached():
+        return
+    # Unattached, the folder is read-only so nothing is saved where it would
+    # be hidden once the drive is attached over it.
+    SHARED_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(SHARED_DIR, 0o555)
+    gid = grp.getgrnam(ACCESS_GROUP).gr_gid
+    options = f"loop,uid=0,gid={gid},umask=002,noatime"
+    result = subprocess.run(["mount", "-o", options, str(FILES_DRIVE), str(SHARED_DIR)],
+                            capture_output=True, text=True)
+    if result.returncode != 0:
+        raise DriveError(f"could not open the files drive: {result.stderr.strip()[:120]}")
+
+
+def detach():
+    """Flush and release the drive so it can be presented over USB or replaced."""
+    if not attached():
+        return
+    result = subprocess.run(["umount", str(SHARED_DIR)], capture_output=True, text=True)
+    if result.returncode != 0:
+        raise DriveError("the shared folder is in use on this device; close its files first")
