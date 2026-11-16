@@ -125,12 +125,45 @@ class UI:
         if filled > 2:
             pygame.draw.rect(self.surface, color, (x, y, filled, h), border_radius=3)
 
-    def frame(self, title, right="", right_color=DIM, hints=""):
+    def icon(self, kind, x, y, color=TEXT):
+        """An 11x11 pictogram: a disc, a USB stick or a folder."""
+        s = self.surface
+        if kind == "cdrom":
+            pygame.draw.circle(s, color, (x + 5, y + 5), 5)
+            pygame.draw.circle(s, PANEL, (x + 5, y + 5), 1)
+        elif kind == "disk":
+            pygame.draw.rect(s, color, (x, y + 1, 8, 9), border_radius=1)
+            pygame.draw.rect(s, color, (x + 8, y + 3, 3, 5))
+        else:
+            pygame.draw.rect(s, color, (x, y + 1, 5, 3), border_radius=1)
+            pygame.draw.rect(s, color, (x, y + 3, 11, 7), border_radius=1)
+
+    def mount_tags(self, mounted):
+        """Draw what is mounted in the middle of the header; return its left edge."""
+        tags = []
+        if mounted and mounted.get("path"):
+            writable = mounted.get("writable")
+            tags.append((mounted.get("mode", "disk"), "R/W" if writable else "R", BAD if writable else GOOD))
+        if mounted and mounted.get("files_drive"):
+            tags.append(("files", "R/W", BAD))
+        if not tags:
+            return WIDTH
+        gap = 9
+        widths = [11 + 3 + self.small.size(label)[0] for _, label, _ in tags]
+        left = x = (WIDTH - sum(widths) - gap * (len(tags) - 1)) // 2
+        for (kind, label, color), width in zip(tags, widths):
+            self.icon(kind, x, 4)
+            self.text(label, (x + 14, 3), self.small, color)
+            x += width + gap
+        return left
+
+    def frame(self, title, right="", right_color=DIM, hints="", mounted=None):
         s = self.surface
         s.fill(BG)
         pygame.draw.rect(s, PANEL, (0, 0, WIDTH, HEADER_H))
         used = self.text(right, (WIDTH - 6, 3), self.small, right_color, align="right") if right else 0
-        self.text(title, (6, 2), self.bold, ACCENT, width=WIDTH - 20 - used)
+        left = self.mount_tags(mounted)
+        self.text(title, (6, 2), self.bold, ACCENT, width=min(WIDTH - 20 - used, left - 14))
         pygame.draw.rect(s, PANEL, (0, HEIGHT - FOOTER_H, WIDTH, FOOTER_H))
         self.text(hints, (6, HEIGHT - FOOTER_H + 1), self.small, DIM, width=WIDTH - 12)
 
@@ -151,12 +184,11 @@ class Screen:
             self.app.pop()
 
     def header_right(self):
-        mounted = self.app.status.get("mounted")
-        return ("● MOUNTED", GOOD) if mounted else ("", DIM)
+        return "", DIM
 
     def draw(self, ui):
         right, color = self.header_right()
-        ui.frame(self.title, right, color, self.hints)
+        ui.frame(self.title, right, color, self.hints, self.app.status.get("mounted"))
         self.body(ui)
 
     def body(self, ui):
@@ -333,12 +365,69 @@ class Home(ListScreen):
         super().body(ui)
 
 
+SETTING_HELP = {
+    "auto_unmount_minutes": (
+        "Unmounts by itself once this much time has passed since you mounted, so a drive is "
+        "not left presented by accident. The home screen shows the time left. It does not "
+        "check whether a computer is still using the drive, so leave it off for long jobs "
+        "such as installing a system."),
+    "default_writable": (
+        "Decides which option comes first when you mount a disk image. Read-only keeps the "
+        "image exactly as it is. Writable lets the computer save changes into the image, "
+        "which some live systems use to keep your files. ISO images are always read-only."),
+    "default_image": (
+        "The image that is mounted as soon as you open Mountable, when nothing else is "
+        "mounted. Pick it from an image's options under My images. Pressing Enter here "
+        "clears it."),
+    "files_drive": (
+        "Adds a second, small USB drive next to the image you mount, for drivers, installers "
+        "or anything else you want at hand. The computer can read and write it. While nothing "
+        "is mounted, the same files are in the shared folder on this device."),
+    "files_drive_format": (
+        "FAT32 is read by nearly everything, including boot menus and old systems, but no "
+        "single file can be larger than 4 GB. exFAT has no such limit and suits modern "
+        "Windows, macOS and Linux. A change only takes effect when you erase the files drive."),
+    "files_drive_size_mb": (
+        "How much the files drive can hold. Space on the SD card is only used as you add "
+        "files, so a large drive costs nothing while it is empty. A change only takes effect "
+        "when you erase the files drive."),
+    "erase": (
+        "Makes a new, empty files drive using the format and size chosen above. Everything "
+        "on the current one is deleted, so copy anything you need out of the shared folder "
+        "first. Your images are not touched."),
+    "catalog": (
+        "Fetches the newest list of images you can download. This also happens by itself "
+        "when the device starts and once a day while it is online. Images you have already "
+        "downloaded stay as they are."),
+    "about": "Shows the version of Mountable and where your images and shared files are kept.",
+}
+
+
+class Help(Screen):
+    hints = "Esc back"
+
+    def __init__(self, app, title, message):
+        super().__init__(app)
+        self.title, self.message = title, message
+
+    def key(self, key):
+        if key in ("esc", "left", "enter", "h"):
+            self.app.pop()
+
+    def body(self, ui):
+        ui.paragraph(self.message, (10, BODY_TOP + 4), WIDTH - 20, max_lines=9)
+
+
 class Settings(ListScreen):
     title = "Settings"
-    hints = "F/X move   Enter change   Esc back"
+    hints = "F/X move   Enter change   H help   Esc back"
 
-    def header_right(self):
-        return "", DIM
+    def key(self, key):
+        if key == "h" and self.rows:
+            label, _, _, setting = self.rows[self.index]
+            self.app.push(Help(self.app, label, SETTING_HELP[setting]))
+        else:
+            super().key(key)
 
     def refresh(self):
         s = self.app.settings
