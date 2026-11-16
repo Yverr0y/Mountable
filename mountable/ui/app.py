@@ -540,7 +540,7 @@ class Entry(Screen):
                 ui.text(f"{human_size(d['speed'])}/s", (WIDTH - 10, y), ui.small, DIM, align="right")
         elif entry.get("installed"):
             ui.text("✔ Downloaded and verified", (10, y + 10), ui.font, GOOD)
-        elif entry["size"] > self.app.status.get("free", entry["size"]):
+        elif entry.get("space_needed", 0) > self.app.status.get("free", entry["size"] * 100):
             ui.text("Not enough free space", (10, y + 10), ui.font, BAD)
 
 

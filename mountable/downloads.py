@@ -10,13 +10,22 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import zipfile
 
-from .catalog import USER_AGENT, final_filename
+from .catalog import USER_AGENT, final_filename, space_needed
 from .config import IMAGES_DIR
 
 CHUNK = 1024 * 1024
 RETRIES = 5
-OPENERS = {"xz": lzma.open, "gz": gzip.open, "bz2": bz2.open}
+
+
+def _open_zip(path, mode):
+    """Open the disk image inside a zip archive: its largest member."""
+    archive = zipfile.ZipFile(path)
+    return archive.open(max(archive.infolist(), key=lambda m: m.file_size))
+
+
+OPENERS = {"xz": lzma.open, "gz": gzip.open, "bz2": bz2.open, "zip": _open_zip}
 ACTIVE = ("queued", "downloading", "verifying", "unpacking")
 
 
@@ -61,9 +70,8 @@ class DownloadManager:
             return [d.info() for d in self._downloads.values()]
 
     def start(self, entry):
-        need = entry["size"] * (4 if entry.get("compression") else 1)
         IMAGES_DIR.mkdir(parents=True, exist_ok=True)
-        if shutil.disk_usage(IMAGES_DIR).free < need + 64 * CHUNK:
+        if shutil.disk_usage(IMAGES_DIR).free < space_needed(entry) + 64 * CHUNK:
             raise ValueError("not enough free space")
         with self._lock:
             current = self._downloads.get(entry["id"])

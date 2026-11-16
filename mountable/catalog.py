@@ -16,7 +16,7 @@ from .config import BUNDLED_CATALOG, CACHE_DIR, IMAGE_EXTENSIONS
 SCHEMA = 1
 CACHED_CATALOG = CACHE_DIR / "catalog.json"
 MAX_CATALOG_BYTES = 2 * 1024 * 1024
-COMPRESSION_SUFFIX = {"xz": ".xz", "gz": ".gz", "bz2": ".bz2"}
+COMPRESSION_SUFFIX = {"xz": ".xz", "gz": ".gz", "bz2": ".bz2", "zip": ".zip"}
 USER_AGENT = f"Mountable/{__version__}"
 
 _FILENAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,200}")
@@ -36,6 +36,14 @@ def final_filename(entry):
     return name
 
 
+def space_needed(entry):
+    """Free bytes required to download an entry and unpack it."""
+    if not entry.get("compression"):
+        return entry["size"]
+    # Without a stated unpacked size, assume a typical disk-image ratio.
+    return entry["size"] + entry.get("unpacked_size", entry["size"] * 5)
+
+
 def _valid_entry(entry, categories):
     try:
         return (
@@ -47,6 +55,8 @@ def _valid_entry(entry, categories):
             and isinstance(entry["size"], int) and entry["size"] > 0
             and _SHA256.fullmatch(entry["sha256"])
             and entry.get("compression") in (None, *COMPRESSION_SUFFIX)
+            and (entry.get("unpacked_size") is None
+                 or (isinstance(entry["unpacked_size"], int) and entry["unpacked_size"] > 0))
             and entry.get("mode", "disk") in ("disk", "cdrom")
             and Path(final_filename(entry)).suffix.lower() in IMAGE_EXTENSIONS
         )

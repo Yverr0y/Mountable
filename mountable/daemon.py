@@ -65,6 +65,7 @@ def cmd_catalog(_):
     for entry in data["images"]:
         entry["file"] = catalog.final_filename(entry)
         entry["installed"] = entry["file"] in present
+        entry["space_needed"] = catalog.space_needed(entry)
     data["can_refresh"] = bool(load_settings()["catalog_url"])
     return data
 
