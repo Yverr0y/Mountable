@@ -15,17 +15,6 @@
     <text x="80" y="352" font-size="30" fill="#aab2c5">Boot any computer from a</text>
     <text x="80" y="392" font-size="30" fill="#aab2c5">Cardputer Zero over USB.</text>
   </g>
-  <g font-family="Fira Mono, monospace" font-size="19" fill="#ffb02e">
-    <g fill="none" stroke="#ffb02e" stroke-width="1.6">
-      <rect x="80" y="434" width="64" height="34" rx="6"/>
-      <rect x="156" y="434" width="64" height="34" rx="6"/>
-      <rect x="232" y="434" width="224" height="34" rx="6"/>
-    </g>
-    <text x="112" y="457" text-anchor="middle">ISO</text>
-    <text x="188" y="457" text-anchor="middle">IMG</text>
-    <text x="344" y="457" text-anchor="middle">100+ images ready</text>
-  </g>
-
   <!-- USB cable from the right-hand port -->
   <g fill="none" stroke="#ffb02e" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
     <path d="M 1220 310 C 1258 310, 1232 464, 1280 644"/>
