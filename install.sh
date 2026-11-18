@@ -1,35 +1,24 @@
 #!/bin/sh
-# Installs or updates Mountable on a Cardputer Zero. Run from the repository
-# root on the device: sudo ./install.sh
+# Builds the Mountable package from this checkout and installs it on a
+# Cardputer Zero. Run on the device: sudo ./install.sh [full|store]
+# "full" (the default) runs the service all the time; "store" is the build
+# published in the Cardputer Zero store, which asks for the device password
+# when the app opens. See packaging/build-deb.sh.
 set -eu
 
 [ "$(id -u)" -eq 0 ] || { echo "run as root: sudo $0" >&2; exit 1; }
 cd "$(dirname "$0")"
 
-PREFIX=/opt/mountable
-LAUNCHER=/usr/share/APPLaunch
-
-for module in pygame evdev; do
-    PYGAME_HIDE_SUPPORT_PROMPT=1 python3 -c "import $module" >/dev/null 2>&1 || {
-        echo "missing Python module '$module': apt install python3-$module" >&2; exit 1; }
-done
-
-rm -rf "$PREFIX"
-install -d "$PREFIX" /etc/mountable /srv/mountable/images /var/cache/mountable
-cp -r mountable catalog "$PREFIX/"
-find "$PREFIX" -name __pycache__ -prune -exec rm -rf {} +
-python3 -m compileall -q "$PREFIX/mountable"
-
-install -m 755 packaging/mountable /usr/bin/mountable
-install -m 644 packaging/mountable.service /etc/systemd/system/mountable.service
-[ -e /etc/mountable/config.json ] || echo '{}' > /etc/mountable/config.json
-
-if [ -d "$LAUNCHER/applications" ]; then
-    install -m 644 packaging/mountable.png "$LAUNCHER/share/images/mountable.png"
-    install -m 644 packaging/mountable.desktop "$LAUNCHER/applications/mountable.desktop"
+# Earlier versions of this script copied files into place without a package.
+if [ -d /opt/mountable ]; then
+    systemctl disable --now mountable.service >/dev/null 2>&1 || true
+    rm -rf /opt/mountable
+    rm -f /etc/systemd/system/mountable.service
 fi
 
-systemctl daemon-reload
-systemctl enable --quiet mountable.service
-systemctl restart mountable.service
+OUTDIR=$(mktemp -d)
+trap 'rm -rf "$OUTDIR"' EXIT
+chmod 755 "$OUTDIR"
+DEB=$(OUTDIR=$OUTDIR packaging/build-deb.sh "${1:-full}")
+apt-get install -y --reinstall --allow-downgrades -o Dpkg::Options::=--force-confold "$DEB"
 echo "Mountable installed. Images go in /srv/mountable/images."

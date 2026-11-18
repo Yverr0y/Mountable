@@ -5,7 +5,7 @@ Wants=sys-kernel-config.mount
 
 [Service]
 Type=simple
-Environment=PYTHONPATH=/opt/mountable PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/usr/lib/mountable PYTHONUNBUFFERED=1
 ExecStart=/usr/bin/python3 -m mountable.daemon
 RuntimeDirectory=mountable
 # A mounted image lives in the kernel and survives a service restart; keep the

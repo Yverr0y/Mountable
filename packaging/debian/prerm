@@ -1,0 +1,15 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = remove ] && [ -d /run/systemd/system ]; then
+    # Release the USB port and the shared folder before the service goes away.
+    PYTHONPATH=/usr/lib/mountable python3 -c \
+        "from mountable.client import call; call('unmount')" >/dev/null 2>&1 || true
+    systemctl disable mountable.service >/dev/null 2>&1 || true
+    systemctl stop mountable.service >/dev/null 2>&1 || true
+    umount /srv/mountable/shared >/dev/null 2>&1 || true
+fi
+
+# Bytecode compiled at install time is not part of the package.
+find /usr/lib/mountable -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+exit 0

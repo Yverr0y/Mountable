@@ -1,9 +1,9 @@
 #!/bin/sh
 # Shows a Cardputer Zero's screen in a window on this computer (view only).
-# Usage: tools/screen-view.sh [user@host]
+# Usage: tools/screen-view.sh user@host
 # Needs ssh access to the device and ffplay (part of ffmpeg) on this computer.
 set -eu
-HOST=${1:-soliton@10.0.0.49}
+HOST=${1:?usage: $0 user@host}
 
 # The screen is 320x170 in RGB565; read it about five times a second.
 # The device file is padded past the visible pixels, so take exactly one frame.

@@ -1,0 +1,38 @@
+{
+  "app_name": "Mountable",
+  "package_name": "mountable",
+  "version": "0.1.0",
+  "description": "Present disk images over USB as a bootable drive",
+  "store": {
+    "summary": "Boot computers from ISOs and disk images over USB",
+    "description": "Turns the Cardputer Zero into a USB drive that can present any ISO or disk image. Pick an image on the device, plug it into a computer and boot from it.\n\n- Mount ISOs and raw disk images as a USB disk or CD-ROM, read-only or writable\n- Download images from a built-in catalog of over 100 systems, verified by SHA-256\n- Optional files drive presented next to the image, for drivers and other files\n- Mounts and downloads keep running after you leave the app\n- On-screen guidance when the cable is unplugged or the Host/Slave switch is in the wrong position\n\nControlling the USB port needs administrator rights, so the app asks for the device password when it opens. The password is used once to start the app's service and is not saved. The service stops by itself once the app is closed and nothing is mounted or downloading; the package installs no sudoers file and no always-on service.\n\nNavigate with F (up), X (down), Z (left) and C (right) or the arrow keys; Enter selects and Esc goes back. Your own images go in /srv/mountable/images.",
+    "categories": [
+      "System Tools"
+    ],
+    "screenshots": [
+      "packaging/store/screenshots/1-home.png",
+      "packaging/store/screenshots/2-connect.png",
+      "packaging/store/screenshots/3-images.png",
+      "packaging/store/screenshots/4-catalog.png",
+      "packaging/store/screenshots/5-versions.png",
+      "packaging/store/screenshots/6-settings.png"
+    ],
+    "icon": "packaging/store/icon.png",
+    "license": "GPL-3.0-only",
+    "source_repo": "https://github.com/s0liton/Mountable",
+    "author": {
+      "github": "s0liton",
+      "display_name": "Pedro Santos"
+    },
+    "share_code": "MNTB",
+    "permissions": {
+      "camera": false,
+      "microphone": false,
+      "imu": false,
+      "network": true,
+      "additional_hardware": false,
+      "background_service": true,
+      "external_display": false
+    }
+  }
+}
