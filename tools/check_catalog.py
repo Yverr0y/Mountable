@@ -73,7 +73,7 @@ IMAGE_KEYS = {
     "mode": str,
 }
 # Keys that may be left out of an image entry.
-IMAGE_OPTIONAL_KEYS = {"unpacked_size": int, "family": str}
+IMAGE_OPTIONAL_KEYS = {"unpacked_size": int, "family": str, "publisher": str}
 # Fields that every entry of a family must share.
 FAMILY_SHARED_KEYS = ("category", "name", "arch")
 

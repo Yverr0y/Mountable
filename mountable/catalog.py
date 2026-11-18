@@ -60,6 +60,7 @@ def _valid_entry(entry, categories):
             and entry.get("mode", "disk") in ("disk", "cdrom")
             and Path(final_filename(entry)).suffix.lower() in IMAGE_EXTENSIONS
             and isinstance(entry.get("family", ""), str)
+            and isinstance(entry.get("publisher", ""), str)
         )
     except (KeyError, TypeError, AttributeError):
         return False
