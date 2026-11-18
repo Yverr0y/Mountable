@@ -21,6 +21,9 @@ that mounts alongside your image for your drivers, keys, apps, whatever really.
 
 ## Install
 
+The easiest way to get started is to download it from the Cardputer Zero store. 
+The shortcode is MTBL.
+
 Each release has two packages on the
 [releases page](https://github.com/s0liton/Mountable/releases):
 
