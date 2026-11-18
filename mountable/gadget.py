@@ -1,5 +1,6 @@
 """USB mass-storage gadget control through configfs. Requires root."""
 
+import json
 import subprocess
 import threading
 import time
@@ -14,6 +15,11 @@ FUNC = GADGET / "functions" / "mass_storage.usb0"
 CONF = GADGET / "configs" / "c.1"
 PAUSED = RUN_DIR / "paused-gadgets"
 MOUNTED_AT = RUN_DIR / "mounted-at"
+# The files presented, one per unit, as they were when mounted. The kernel
+# forgets a unit's file when the computer ejects it; this is how that is noticed.
+PRESENTED = RUN_DIR / "presented"
+# Present while auto-unmount is switched off for the current mount only.
+TIMER_OFF = RUN_DIR / "timer-off"
 
 # The OS image runs its own gadget (adb) on the controller, managed by these
 # services. Only one gadget can be bound at a time, so they are stopped while
@@ -68,18 +74,36 @@ def _uptime():
     return time.clock_gettime(time.CLOCK_BOOTTIME)
 
 
+def _presented():
+    try:
+        return [str(path) for path in json.loads(PRESENTED.read_text())]
+    except (OSError, ValueError, TypeError):
+        return []
+
+
 def mounted():
-    """What is being presented: the image, if any, and whether the files drive is."""
+    """What is being presented: the image, if any, and whether the files drive is.
+
+    "ejected" is set once the computer has ejected every unit, which is when
+    unmounting cannot interrupt it.
+    """
     if not FUNC.is_dir():
         return None
-    state = {"path": "", "mode": "disk", "writable": False, "files_drive": False}
-    for lun in sorted(FUNC.glob("lun.*")):
-        path = _read(lun / "file")
+    state = {"path": "", "mode": "disk", "writable": False, "files_drive": False, "ejected": False}
+    presented = _presented()
+    in_use = 0
+    for n, lun in enumerate(sorted(FUNC.glob("lun.*"))):
+        current = _read(lun / "file")
+        path = current or (presented[n] if n < len(presented) else "")
+        if not path:
+            continue
+        in_use += bool(current)
         if path == str(FILES_DRIVE):
             state["files_drive"] = True
-        elif path:
+        else:
             state.update(path=path, mode="cdrom" if _read(lun / "cdrom") == "1" else "disk",
                          writable=_read(lun / "ro") == "0")
+    state["ejected"] = bool(presented) and in_use == 0
     return state
 
 
@@ -156,6 +180,8 @@ def _teardown():
         if GADGET.is_dir():
             raise GadgetError("could not remove the USB gadget")
     MOUNTED_AT.unlink(missing_ok=True)
+    TIMER_OFF.unlink(missing_ok=True)
+    PRESENTED.unlink(missing_ok=True)
     _resume_others()
 
 
@@ -212,6 +238,8 @@ def mount(path=None, mode="disk", writable=False, files_drive=None):
             (CONF / "mass_storage.usb0").symlink_to(FUNC)
             _pause_others(udc)
             _write(GADGET / "UDC", udc)
+            TIMER_OFF.unlink(missing_ok=True)
+            PRESENTED.write_text(json.dumps([str(file) for file, _, _ in units]))
             MOUNTED_AT.write_text(str(_uptime()))
         except OSError as e:
             try:

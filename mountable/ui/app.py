@@ -3,10 +3,13 @@
 import argparse
 import os
 import time
+from pathlib import Path
+from urllib.parse import urlsplit
 
-from .. import __version__
+from .. import __version__, service
 from ..client import ServiceError, call
 from ..config import CHOICES
+from ..updates import RELEASES_PAGE
 from . import display
 from .display import HEIGHT, WIDTH, pygame
 
@@ -29,6 +32,53 @@ ROWS = (HEIGHT - HEADER_H - FOOTER_H - 2) // ROW_H
 
 ACTIVE_STATES = ("queued", "downloading", "verifying", "unpacking")
 
+REPOSITORY = "github.com/s0liton/Mountable"
+# QR code for https://github.com/s0liton/Mountable, one string per row.
+REPOSITORY_QR = (
+    "#######..#.#.#.#.####.#######",
+    "#.....#..#.#.####.#...#.....#",
+    "#.###.#.#.#..#.##...#.#.###.#",
+    "#.###.#.###...##.#.#..#.###.#",
+    "#.###.#.#.##....#..##.#.###.#",
+    "#.....#.##..#..#......#.....#",
+    "#######.#.#.#.#.#.#.#.#######",
+    "........##.#..###.#..........",
+    "#.#####..####....#..#.#####..",
+    "###.##..#.#..##.####..###...#",
+    "#..#####...#####.#..#...#....",
+    "#.####.##.#..#.....#.....#.#.",
+    ".#....#..##.#.##.#..#....##..",
+    "....##.#...#....#########...#",
+    "..#...#...##...###..##..###..",
+    ".###.#..#..##.##..#######..#.",
+    "##.#..##.###...#.###.#.#.##..",
+    "##..##.......##.####.####.#.#",
+    "#...#.##..##.###.#..#.###.#..",
+    "#.#.##...#...#.##...###....#.",
+    "#...###..###..###..######.###",
+    "........#.#.....###.#...#####",
+    "#######..###...#...##.#.###..",
+    "#.....#.#.###.#.#..##...#..#.",
+    "#.###.#.##..#....#..#####.#..",
+    "#.###.#.###...#.#####....####",
+    "#.###.#.##..##.###.#########.",
+    "#.....#..##....##...##.#.#.#.",
+    "#######.#..#..####.#..###.#..",
+)
+
+
+def read_battery():
+    """(percent, charging) from the battery gauge, or None without one."""
+    try:
+        for supply in sorted(Path("/sys/class/power_supply").iterdir()):
+            if (supply / "type").read_text().strip() == "Battery":
+                percent = int((supply / "capacity").read_text())
+                status = (supply / "status").read_text().strip()
+                return max(0, min(100, percent)), status in ("Charging", "Full")
+    except (OSError, ValueError):
+        pass
+    return None
+
 
 def human_size(n):
     for unit in ("B", "KB", "MB"):
@@ -48,6 +98,13 @@ def minutes_label(minutes):
     if minutes < 60:
         return f"{minutes} min"
     return "1 hour" if minutes == 60 else f"{minutes // 60} hours"
+
+
+def time_left(seconds):
+    """Time until auto-unmount: minutes, or minutes and seconds near the end."""
+    if seconds >= 120:
+        return f"{round(seconds / 60)} min"
+    return f"{seconds // 60}:{seconds % 60:02d}"
 
 
 def megabytes_label(mb):
@@ -74,6 +131,7 @@ class UI:
         self.bold = pygame.font.Font(FONT_DIR + "DejaVuSans-Bold.ttf", 12)
         self.small = pygame.font.Font(FONT_DIR + "DejaVuSans.ttf", 10)
         self.big = pygame.font.Font(FONT_DIR + "DejaVuSans-Bold.ttf", 15)
+        self.battery = None   # (percent, charging), set by the app
 
     def fit(self, text, font, width):
         if font.size(text)[0] <= width:
@@ -118,6 +176,35 @@ class UI:
             y += font.get_linesize()
         return y
 
+    def chunks(self, text, font, width, max_lines):
+        """Split text with no spaces, such as a link, into lines that fit."""
+        lines = []
+        while text and len(lines) < max_lines:
+            end = len(text)
+            while end > 1 and font.size(text[:end])[0] > width:
+                end -= 1
+            lines.append(text[:end])
+            text = text[end:]
+        if text and lines:
+            lines[-1] = self.fit(lines[-1] + text, font, width)
+        return lines
+
+    def battery_gauge(self):
+        """Draw the battery at the right of the header; return the width used."""
+        if not self.battery:
+            return 0
+        percent, charging = self.battery
+        color = GOOD if charging else BAD if percent <= 15 else TEXT
+        s = self.surface
+        x = WIDTH - 6 - 18
+        pygame.draw.rect(s, color, (x, 6, 16, 9), 1, border_radius=2)
+        pygame.draw.rect(s, color, (x + 16, 9, 2, 3))
+        filled = round(12 * percent / 100)
+        if filled:
+            pygame.draw.rect(s, color, (x + 2, 8, filled, 5))
+        label = self.text(f"{percent}%", (x - 4, 3), self.small, color, align="right")
+        return 18 + 4 + label + 8
+
     def bar(self, rect, fraction, color=ACCENT):
         pygame.draw.rect(self.surface, PANEL, rect, border_radius=3)
         x, y, w, h = rect
@@ -126,28 +213,25 @@ class UI:
             pygame.draw.rect(self.surface, color, (x, y, filled, h), border_radius=3)
 
     def icon(self, kind, x, y, color=TEXT):
-        """An 11x11 pictogram: a disc, a USB stick or a folder."""
+        """An 11x11 pictogram: a disc for an image, a folder for the files drive."""
         s = self.surface
-        if kind == "cdrom":
+        if kind == "image":
             pygame.draw.circle(s, color, (x + 5, y + 5), 5)
-            pygame.draw.circle(s, PANEL, (x + 5, y + 5), 1)
-        elif kind == "disk":
-            pygame.draw.rect(s, color, (x, y + 1, 8, 9), border_radius=1)
-            pygame.draw.rect(s, color, (x + 8, y + 3, 3, 5))
+            pygame.draw.circle(s, PANEL, (x + 5, y + 5), 2)
         else:
             pygame.draw.rect(s, color, (x, y + 1, 5, 3), border_radius=1)
             pygame.draw.rect(s, color, (x, y + 3, 11, 7), border_radius=1)
 
     def mount_tags(self, mounted):
-        """Draw what is mounted in the middle of the header; return its left edge."""
+        """Draw what is mounted in the middle of the header; return its left and right edges."""
         tags = []
         if mounted and mounted.get("path"):
             writable = mounted.get("writable")
-            tags.append((mounted.get("mode", "disk"), "R/W" if writable else "R", BAD if writable else GOOD))
+            tags.append(("image", "R/W" if writable else "R", BAD if writable else GOOD))
         if mounted and mounted.get("files_drive"):
             tags.append(("files", "R/W", BAD))
         if not tags:
-            return WIDTH
+            return WIDTH, 0
         gap = 9
         widths = [11 + 3 + self.small.size(label)[0] for _, label, _ in tags]
         left = x = (WIDTH - sum(widths) - gap * (len(tags) - 1)) // 2
@@ -155,14 +239,17 @@ class UI:
             self.icon(kind, x, 4)
             self.text(label, (x + 14, 3), self.small, color)
             x += width + gap
-        return left
+        return left, x - gap
 
     def frame(self, title, right="", right_color=DIM, hints="", mounted=None):
         s = self.surface
         s.fill(BG)
         pygame.draw.rect(s, PANEL, (0, 0, WIDTH, HEADER_H))
-        used = self.text(right, (WIDTH - 6, 3), self.small, right_color, align="right") if right else 0
-        left = self.mount_tags(mounted)
+        left, tags_end = self.mount_tags(mounted)
+        used = self.battery_gauge()
+        # The screen's own note gives way when what is mounted needs the room.
+        if right and WIDTH - 6 - used - self.small.size(right)[0] >= tags_end + 6:
+            used += self.text(right, (WIDTH - 6 - used, 3), self.small, right_color, align="right")
         self.text(title, (6, 2), self.bold, ACCENT, width=min(WIDTH - 20 - used, left - 14))
         pygame.draw.rect(s, PANEL, (0, HEIGHT - FOOTER_H, WIDTH, FOOTER_H))
         self.text(hints, (6, HEIGHT - FOOTER_H + 1), self.small, DIM, width=WIDTH - 12)
@@ -277,11 +364,77 @@ class Confirm(Screen):
                     TEXT if active else DIM, align="center")
 
 
+class Unlock(Screen):
+    """Asks for the device password and starts the service with it."""
+
+    title = "Device password"
+    hints = "Enter start   Esc exit"
+    text_input = True   # keys arrive as typed characters
+    animated = True     # the last character shows briefly, then hides
+    SHOW_LAST = 1.0     # seconds
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.password = ""
+        self.typed_at = 0.0
+        self.message, self.color = "", DIM
+
+    def refresh(self):
+        if not self.app.service_down:   # started some other way meanwhile
+            self.app.pop()
+            self.app.ready()
+
+    def key(self, key):
+        if key == "esc":
+            self.app.running = False
+        elif key == "enter":
+            self.submit()
+        elif key == "backspace":
+            self.password = self.password[:-1]
+        elif len(key) == 1 and len(self.password) < 128:
+            self.password += key
+            self.typed_at = time.monotonic()
+            self.message = ""
+
+    def submit(self):
+        if not self.password:
+            return
+        self.message, self.color = "Starting…", DIM
+        self.app.draw()
+        error = service.start(self.password)
+        self.password = ""
+        self.message, self.color = error, BAD
+        if not error:
+            self.app.poll()
+
+    def body(self, ui):
+        y = ui.paragraph("Mountable needs the device password to control the USB port. "
+                         "It is used once to start the service and is not saved.",
+                         (10, BODY_TOP + 6), WIDTH - 20, max_lines=3)
+        rect = pygame.Rect(10, y + 8, WIDTH - 20, 24)
+        pygame.draw.rect(ui.surface, PANEL, rect, border_radius=5)
+        pygame.draw.rect(ui.surface, ACCENT, rect, 1, border_radius=5)
+        if self.password:
+            # Show the character just typed for a moment, as phones do: on
+            # this keyboard it is the only way to see what a key produced.
+            shown = "●" * min(len(self.password), 26)
+            if time.monotonic() - self.typed_at < self.SHOW_LAST:
+                shown = shown[:-1] + self.password[-1]
+            ui.text(shown, (rect.x + 8, rect.y + 5), ui.font, TEXT)
+        else:
+            ui.text("Type the password, then press Enter", (rect.x + 8, rect.y + 5), ui.font, DIM)
+        if self.message:
+            ui.text(self.message, (WIDTH // 2, rect.bottom + 6), ui.font, self.color,
+                    width=WIDTH - 20, align="center")
+
+
 def connection_summary(status):
     """(text, colour): where a mounted image stands with the computer."""
     if status.get("switch") == "host":
         return "Flip switch to SLAVE", ACCENT
     state = status.get("udc_state")
+    if (status.get("mounted") or {}).get("ejected"):
+        return "Ejected by computer", GOOD
     if state == "configured":
         return "Connected to computer", GOOD
     if state == "suspended":
@@ -316,6 +469,8 @@ class Home(ListScreen):
             active = [d for d in downloads if d["state"] in ACTIVE_STATES]
             label = download_label(active[0]) if active else f"{len(downloads)} finished"
             rows.append(("Downloads", label, ACCENT if active else None, "downloads"))
+        if status.get("update"):
+            rows.append(("Update available", status["update"], ACCENT, "update"))
         rows.append(("Settings", "", None, "settings"))
         if [r[3] for r in rows] != [r[3] for r in self.rows]:
             self.index = self.top = 0   # the menu changed shape; do not leave the cursor on a different action
@@ -337,6 +492,9 @@ class Home(ListScreen):
             if self.app.request("mount", files_only=True) is not None:
                 self.app.push(Status(self.app))
             return
+        if target == "update":
+            self.app.push(Help(self.app, "Update available", update_message(self.app.status["update"])))
+            return
         screens = {"status": Status, "images": Images, "catalog": Categories,
                    "downloads": Downloads, "settings": Settings}
         self.app.push(screens[target](self.app))
@@ -353,7 +511,7 @@ class Home(ListScreen):
                 label += " + FILES"
             remaining = status.get("auto_unmount_in")
             if remaining is not None:
-                label += f" · {max(1, round(remaining / 60))} min left"
+                label += f" · {time_left(remaining)} left"
             ui.text(label, (rect.x + 9, rect.y + 5), ui.small, GOOD)
             text, color = connection_summary(status)
             ui.text(text, (rect.right - 9, rect.y + 5), ui.small, color, align="right")
@@ -367,40 +525,36 @@ class Home(ListScreen):
 
 SETTING_HELP = {
     "auto_unmount_minutes": (
-        "Unmounts by itself once this much time has passed since you mounted, so a drive is "
-        "not left presented by accident. The home screen shows the time left. It does not "
-        "check whether a computer is still using the drive, so leave it off for long jobs "
-        "such as installing a system."),
+        "Unmounts automatically this long after mounting. It does not check whether a "
+        "computer is still using the drive, so turn it off for long jobs."),
     "default_writable": (
-        "Decides which option comes first when you mount a disk image. Read-only keeps the "
-        "image exactly as it is. Writable lets the computer save changes into the image, "
-        "which some live systems use to keep your files. ISO images are always read-only."),
+        "Whether disk images are mounted read-only or writable by default. Writable lets "
+        "the computer save changes into the image. ISOs are always read-only."),
     "default_image": (
-        "The image that is mounted as soon as you open Mountable, when nothing else is "
-        "mounted. Pick it from an image's options under My images. Pressing Enter here "
-        "clears it."),
+        "Mounts this image when Mountable opens, if nothing is mounted. Choose it from an "
+        "image's options in My images. Press Enter here to turn it off."),
     "files_drive": (
-        "Adds a second, small USB drive next to the image you mount, for drivers, installers "
-        "or anything else you want at hand. The computer can read and write it. While nothing "
-        "is mounted, the same files are in the shared folder on this device."),
+        "Adds a second, writable USB drive next to the mounted image, for drivers and other "
+        "files. While it is not mounted, its files are in the shared folder on this device."),
     "files_drive_format": (
-        "FAT32 is read by nearly everything, including boot menus and old systems, but no "
-        "single file can be larger than 4 GB. exFAT has no such limit and suits modern "
-        "Windows, macOS and Linux. A change only takes effect when you erase the files drive."),
+        "FAT32 works almost everywhere but limits files to 4 GB. exFAT has no limit but "
+        "needs a newer system. Applies when you erase the files drive."),
     "files_drive_size_mb": (
-        "How much the files drive can hold. Space on the SD card is only used as you add "
-        "files, so a large drive costs nothing while it is empty. A change only takes effect "
+        "The capacity of the files drive. Space is only used as files are added. Applies "
         "when you erase the files drive."),
     "erase": (
-        "Makes a new, empty files drive using the format and size chosen above. Everything "
-        "on the current one is deleted, so copy anything you need out of the shared folder "
-        "first. Your images are not touched."),
+        "Creates a new, empty files drive with the format and size above. Everything on "
+        "the current one is deleted. Your images are not affected."),
     "catalog": (
-        "Fetches the newest list of images you can download. This also happens by itself "
-        "when the device starts and once a day while it is online. Images you have already "
-        "downloaded stay as they are."),
-    "about": "Shows the version of Mountable and where your images and shared files are kept.",
+        "Fetches the latest list of downloadable images now. This also happens when the "
+        "app opens and once a day."),
+    "about": "Shows the version, where files are kept, and where to find the project.",
 }
+
+
+def update_message(version):
+    return (f"Mountable {version} is available. You have {__version__}. Update it from the "
+            f"store, or download it from {RELEASES_PAGE}")
 
 
 class Help(Screen):
@@ -444,7 +598,7 @@ class Settings(ListScreen):
             ("Auto-unmount", minutes_label(s.get("auto_unmount_minutes")), None, "auto_unmount_minutes"),
             ("Mount disk images", "writable" if s.get("default_writable") else "read-only", None,
              "default_writable"),
-            ("Image mounted on open", s.get("default_image") or "none", None, "default_image"),
+            ("Auto-Mount Image on Launch", s.get("default_image") or "none", None, "default_image"),
             ("Files drive", "on" if s.get("files_drive") else "off", None, "files_drive"),
             ("Files drive format", FORMAT_LABEL.get(s.get("files_drive_format"), ""), None,
              "files_drive_format"),
@@ -471,7 +625,7 @@ class Settings(ListScreen):
             if not app.settings.get("default_image"):
                 app.toast("Choose one from an image's options")
             elif app.request("set", key=key, value="") is not None:
-                app.toast("No image mounts on open")
+                app.toast("Auto-mount on launch is off")
         else:
             choices = CHOICES[key]
             value = choices[(choices.index(app.settings[key]) + 1) % len(choices)]
@@ -487,18 +641,35 @@ class Settings(ListScreen):
 class About(Screen):
     title = "About"
     hints = "Esc back"
+    MODULE = 3   # pixels per QR module
 
     def body(self, ui):
         status = self.app.status
+        size = (len(REPOSITORY_QR) + 4) * self.MODULE   # two modules of white around the code
+        box = pygame.Rect(WIDTH - 10 - size, BODY_TOP + 8, size, size)
+        pygame.draw.rect(ui.surface, (255, 255, 255), box)
+        for row, line in enumerate(REPOSITORY_QR):
+            for column, cell in enumerate(line):
+                if cell == "#":
+                    pygame.draw.rect(ui.surface, (0, 0, 0), (
+                        box.x + (column + 2) * self.MODULE, box.y + (row + 2) * self.MODULE,
+                        self.MODULE, self.MODULE))
+
+        width = box.x - 20
         ui.text(f"Mountable {__version__}", (10, BODY_TOP + 6), ui.big)
-        y = ui.paragraph("Presents disk images over USB so a computer can boot from them.",
-                         (10, BODY_TOP + 30), WIDTH - 20, color=DIM)
-        ui.text("Images:", (10, y + 6), ui.small, DIM)
-        ui.text(status.get("images_dir", ""), (70, y + 5), ui.font, TEXT, width=WIDTH - 80)
-        ui.text("Files drive:", (10, y + 24), ui.small, DIM)
-        ui.text(status.get("shared_dir", ""), (70, y + 23), ui.font, TEXT, width=WIDTH - 80)
-        if "free" in status:
-            ui.text(f"{human_size(status['free'])} free", (10, y + 42), ui.small, DIM)
+        update = status.get("update")
+        ui.text(f"Version {update} is available" if update else "Boot computers over USB",
+                (10, BODY_TOP + 27), ui.small, ACCENT if update else DIM, width=width)
+        y = BODY_TOP + 44
+        for label, value in (("Images", status.get("images_dir", "")),
+                             ("Shared files", status.get("shared_dir", ""))):
+            ui.text(label, (10, y), ui.small, DIM)
+            ui.text(value, (10, y + 12), ui.small, TEXT, width=width)
+            y += 27
+        made = ui.text("Made with ", (10, y + 2), ui.font, TEXT)
+        made += ui.text("♥", (10 + made, y + 2), ui.font, BAD)
+        ui.text(" by s0liton", (10 + made, y + 2), ui.font, TEXT)
+        ui.text(REPOSITORY, (10, y + 19), ui.small, ACCENT, width=width)
 
 
 class Status(Screen):
@@ -511,13 +682,29 @@ class Status(Screen):
         mounted = self.app.status.get("mounted")
         if key in ("u", "enter") and mounted:
             self.app.confirm_unmount(then=self.app.pop)
+        elif key == "t" and mounted:
+            self.app.keep_mounted()
         elif key in ("esc", "left"):
             self.app.pop()
 
     def draw(self, ui):
-        mounted = self.app.status.get("mounted")
-        self.hints = "U unmount   Esc back (stays mounted)" if mounted else "Esc back"
+        status = self.app.status
+        remaining = status.get("auto_unmount_in")
+        if not status.get("mounted"):
+            self.hints = "Esc back"
+        elif remaining is not None:
+            self.hints = "U unmount   T stop timer   Esc back"
+        else:
+            self.hints = "U unmount   Esc back"
         super().draw(ui)
+        if status.get("mounted"):   # the auto-unmount timer, at the bottom right
+            if remaining is not None:
+                note, color = f"unmounts in {time_left(remaining)}", ACCENT
+            elif status.get("auto_unmount_off"):
+                note, color = "timer off", DIM
+            else:
+                return
+            ui.text(note, (WIDTH - 6, HEIGHT - FOOTER_H + 1), ui.small, color, align="right")
 
     def arrow(self, ui, left):
         """A flashing arrow at the screen edge next to the part to operate."""
@@ -554,9 +741,13 @@ class Status(Screen):
             ui.text("Flip the switch", (190, top), ui.big, ACCENT, align="center")
             ui.paragraph("Set the Host/Slave switch on the left side to SLAVE.",
                          (190, top + 24), 190, max_lines=3, align="center")
+        elif mounted.get("ejected"):
+            ui.text("✔ Ejected", (WIDTH // 2, top), ui.big, GOOD, align="center")
+            ui.paragraph("The computer has ejected the drive. It is safe to unmount.",
+                         (WIDTH // 2, top + 24), 260, color=DIM, max_lines=3, align="center")
         elif state == "configured":
             ui.text("✔ Connected", (WIDTH // 2, top), ui.big, GOOD, align="center")
-            ui.paragraph("The computer sees the drive. Choose it in the boot menu.",
+            ui.paragraph("You can leave the app while mounted.",
                          (WIDTH // 2, top + 24), 260, color=DIM, max_lines=3, align="center")
         elif state == "suspended":
             ui.text("Connected, idle", (WIDTH // 2, top), ui.big, GOOD, align="center")
@@ -606,6 +797,37 @@ class Images(ListScreen):
         self.app.push(ImageActions(self.app, image))
 
 
+class UnmountWarning(Screen):
+    """Shown shortly before auto-unmount, with a way to call it off."""
+
+    title = "Unmounting soon"
+    hints = "T keep mounted   Esc ignore"
+    animated = True
+
+    def refresh(self):
+        if self.app.status.get("auto_unmount_in") is None:   # unmounted, or the timer was stopped
+            self.app.pop()
+
+    def key(self, key):
+        if key == "t":
+            self.app.keep_mounted()
+        elif key in ("esc", "left", "enter"):
+            self.app.pop()
+
+    def body(self, ui):
+        status = self.app.status
+        remaining = status.get("auto_unmount_in")
+        if remaining is None or not status.get("mounted"):
+            return
+        ui.text(mounted_name(status["mounted"]), (WIDTH // 2, BODY_TOP + 8), ui.bold, TEXT,
+                width=WIDTH - 20, align="center")
+        ui.text(f"unmounts in {time_left(remaining)}", (WIDTH // 2, BODY_TOP + 30), ui.big, ACCENT,
+                align="center")
+        ui.paragraph("Press T to keep it mounted until you unmount it yourself, or Esc to let "
+                     "the timer run out.", (WIDTH // 2, BODY_TOP + 60), WIDTH - 40, color=DIM,
+                     max_lines=3, align="center")
+
+
 class ImageActions(ListScreen):
     def __init__(self, app, image):
         super().__init__(app)
@@ -630,9 +852,9 @@ class ImageActions(ListScreen):
             rows = [read_only, writable]
         rows.append((f"Mount as {label[other]}", "read-only", None, (other, False)))
         if self.app.settings.get("default_image") == image["name"]:
-            rows.append(("Stop mounting when the app opens", "default", GOOD, "undefault"))
+            rows.append(("Stop auto-mounting on launch", "on", GOOD, "undefault"))
         else:
-            rows.append(("Mount when the app opens", "", None, "default"))
+            rows.append(("Auto-mount on launch", "", None, "default"))
         rows.append(("Delete", human_size(image["size"]), None, "delete"))
         self.rows = rows
 
@@ -648,7 +870,7 @@ class ImageActions(ListScreen):
         elif action in ("default", "undefault"):
             value = image["name"] if action == "default" else ""
             if app.request("set", key="default_image", value=value) is not None:
-                app.toast("Will mount when the app opens" if value else "No longer the default")
+                app.toast("Will auto-mount on launch" if value else "Auto-mount on launch is off")
         else:
             mode, writable = action
             current = app.status.get("mounted")
@@ -722,6 +944,17 @@ class CatalogList(ListScreen):
         self.category = category
         self.family = family
         self.title = category["name"]
+        self.hints = "F/X move   Enter select   I info   Esc back"
+
+    def key(self, key):
+        if key == "i" and self.rows:
+            target = self.rows[self.index][3]
+            if isinstance(target, str):   # a family: describe its newest version
+                target = next(e for e in self.app.load_catalog().get("images", [])
+                              if e.get("family") == target)
+            self.app.push(Info(self.app, target))
+        else:
+            super().key(key)
 
     def refresh(self):
         entries = [e for e in self.app.load_catalog().get("images", []) if e["category"] == self.category["id"]]
@@ -749,6 +982,42 @@ class CatalogList(ListScreen):
             self.app.push(CatalogList(self.app, self.category, family=target))
         else:
             self.app.push(Entry(self.app, target["id"]))
+
+
+class Info(Screen):
+    """Who publishes a catalog image and where it is downloaded from."""
+
+    hints = "Esc back"
+
+    def __init__(self, app, entry):
+        super().__init__(app)
+        self.entry = entry
+        self.title = entry["name"]
+
+    def key(self, key):
+        if key in ("esc", "left", "enter", "i"):
+            self.app.pop()
+
+    def body(self, ui):
+        entry = self.entry
+        url = entry.get("url", "")
+        site = urlsplit(entry.get("homepage", ""))
+        y = BODY_TOP + 6
+        for label, value in (("Published by", entry.get("publisher") or "not stated"),
+                             ("Website", (site.netloc + site.path).rstrip("/")),
+                             ("Download host", urlsplit(url).netloc)):
+            ui.text(label, (10, y + 1), ui.small, DIM)
+            ui.text(value, (92, y), ui.font, TEXT, width=WIDTH - 102)
+            y += 17
+        ui.text("Link", (10, y + 5), ui.small, DIM)
+        for line in ui.chunks(url, ui.small, WIDTH - 20, 3):
+            y += 13
+            ui.text(line, (10, y + 5), ui.small, TEXT)
+        y = HEIGHT - FOOTER_H - 16
+        ui.text("SHA-256", (10, y), ui.small, DIM)
+        verified = entry.get("verified")   # the downloaded file matched this checksum
+        mark = ui.text("✔" if verified else "!", (60, y - 1), ui.bold, GOOD if verified else ACCENT)
+        ui.text(entry.get("sha256", ""), (64 + mark, y), ui.small, TEXT, width=WIDTH - 74 - mark)
 
 
 def family_state(app, versions):
@@ -780,16 +1049,18 @@ class Entry(Screen):
         if self.entry:
             self.title = self.entry["name"]
         if self.download and self.download["state"] in ACTIVE_STATES:
-            self.hints = "Enter cancel download   Esc back"
+            self.hints = "Enter cancel download   I info   Esc back"
         elif self.entry and self.entry.get("installed"):
-            self.hints = "Enter mount or delete   Esc back"
+            self.hints = "Enter mount or delete   I info   Esc back"
         else:
-            self.hints = "Enter download   Esc back"
+            self.hints = "Enter download   I info   Esc back"
 
     def key(self, key):
         app, entry = self.app, self.entry
         if key in ("esc", "left") or not entry:
             app.pop()
+        elif key == "i":
+            app.push(Info(app, entry))
         elif key != "enter":
             return
         elif self.download and self.download["state"] in ACTIVE_STATES:
@@ -828,7 +1099,8 @@ class Entry(Screen):
             if d["state"] == "downloading" and d["speed"]:
                 ui.text(f"{human_size(d['speed'])}/s", (WIDTH - 10, y), ui.small, DIM, align="right")
         elif entry.get("installed"):
-            ui.text("✔ Downloaded and verified", (10, y + 10), ui.font, GOOD)
+            ui.text("✔ Downloaded and verified" if entry.get("verified") else "✔ Downloaded",
+                    (10, y + 10), ui.font, GOOD)
         elif entry.get("space_needed", 0) > self.app.status.get("free", entry["size"] * 100):
             ui.text("Not enough free space", (10, y + 10), ui.font, BAD)
 
@@ -871,13 +1143,28 @@ class App:
         self.running = True
         self.service_down = False
         self._toast = ("", 0, TEXT)
+        self._battery_read = float("-inf")
+        self._warned = False
         self.stack = []
         self.poll()
+        if self.service_down and not service.start():   # works where sudo asks no password
+            self.poll()
+        self.push(Home(self))
+        if self.service_down:
+            self.push(Unlock(self))
+        else:
+            self.ready()
+
+    def ready(self):
+        """The service has just become reachable: load what depends on it."""
         try:
             self.image_count = len(call("images")["images"])
+            call("check")   # look for a newer image list and release, in the background
         except ServiceError:
             pass
-        self.push(Home(self))
+        if self.status.get("update"):
+            self.toast(f"Update {self.status['update']} available")
+        self.stack[-1].refresh()
         self.mount_default_image()
 
     @property
@@ -908,7 +1195,9 @@ class App:
         if not mounted:
             return
         name = mounted_name(mounted)
-        if self.status.get("switch") != "host" and self.status.get("udc_state") == "configured":
+        if mounted.get("ejected"):
+            message = f"The computer has ejected {name}. Unmount it?"
+        elif self.status.get("switch") != "host" and self.status.get("udc_state") == "configured":
             message = f"A computer is using {name}. Unmounting now can crash it or lose its data. Unmount anyway?"
         else:
             message = f"Unmount {name}?"
@@ -920,6 +1209,21 @@ class App:
                     then()
 
         self.push(Confirm(self, "Unmount", message, unmount, yes="Unmount"))
+
+    WARN_BEFORE = 120   # seconds before auto-unmount at which to warn
+
+    def keep_mounted(self):
+        """Stop the auto-unmount timer for the current mount."""
+        if self.status.get("auto_unmount_in") is not None and self.request("keep") is not None:
+            self.toast("Timer stopped. Stays mounted.")
+            self.stack[-1].refresh()
+
+    def warn_before_unmount(self):
+        remaining = self.status.get("auto_unmount_in")
+        soon = remaining is not None and remaining <= self.WARN_BEFORE
+        if soon and not self._warned and not isinstance(self.stack[-1], (Unlock, UnmountWarning)):
+            self.push(UnmountWarning(self))
+        self._warned = soon   # warn once per countdown
 
     def toast(self, message, error=False):
         self._toast = (message, time.monotonic() + (4 if error else 2), BAD if error else GOOD)
@@ -943,6 +1247,9 @@ class App:
         return self.catalog
 
     def poll(self):
+        if time.monotonic() - self._battery_read >= 15:
+            self._battery_read = time.monotonic()
+            self.ui.battery = read_battery()
         try:
             previous = {d["id"]: d["state"] for d in self.status.get("downloads", [])}
             self.status = call("status", timeout=5)
@@ -958,7 +1265,7 @@ class App:
     def draw(self):
         ui = self.ui
         self.stack[-1].draw(ui)
-        if self.service_down:
+        if self.service_down and not isinstance(self.stack[-1], Unlock):
             pygame.draw.rect(ui.surface, BAD, (0, HEIGHT - FOOTER_H, WIDTH, FOOTER_H))
             ui.text("Mountable service is not running", (6, HEIGHT - FOOTER_H + 1), ui.small, BG)
         message, until, color = self._toast
@@ -976,6 +1283,7 @@ class App:
             self.draw()
             top = self.stack[-1]
             busy = top.animated or time.monotonic() < self._toast[1]
+            self.keyboard.text = getattr(top, "text_input", False)
             for key in self.keyboard.read(0.2 if busy else self.POLL_INTERVAL):
                 self.stack[-1].key(key)
                 self.stack[-1].refresh()
@@ -984,6 +1292,9 @@ class App:
             if time.monotonic() - last_poll >= self.POLL_INTERVAL:
                 last_poll = time.monotonic()
                 self.poll()
+                if self.service_down and not isinstance(self.stack[-1], Unlock):
+                    self.push(Unlock(self))
+                self.warn_before_unmount()
                 self.stack[-1].refresh()
         self.draw()
 

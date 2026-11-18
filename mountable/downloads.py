@@ -3,6 +3,7 @@
 import bz2
 import gzip
 import hashlib
+import json
 import lzma
 import os
 import shutil
@@ -27,6 +28,47 @@ def _open_zip(path, mode):
 
 OPENERS = {"xz": lzma.open, "gz": gzip.open, "bz2": bz2.open, "zip": _open_zip}
 ACTIVE = ("queued", "downloading", "verifying", "unpacking")
+
+
+# Which downloaded images matched their catalog checksum, and the size and
+# modification time they had then, so a file changed or replaced since does
+# not count as verified.
+VERIFIED = IMAGES_DIR.parent / "verified.json"
+_verified_lock = threading.Lock()
+
+
+def _load_verified():
+    try:
+        data = json.loads(VERIFIED.read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _record_verified(path, sha256):
+    stat = path.stat()
+    with _verified_lock:
+        data = _load_verified()
+        data[path.name] = {"sha256": sha256, "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+        tmp = VERIFIED.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=1) + "\n")
+        tmp.replace(VERIFIED)
+
+
+def verified_files(sha256_by_name):
+    """Names of the given files that are still exactly as they were verified."""
+    data = _load_verified()
+    names = set()
+    for name, sha256 in sha256_by_name.items():
+        record = data.get(name)
+        try:
+            stat = (IMAGES_DIR / name).stat()
+            if (record and record["sha256"] == sha256 and record["size"] == stat.st_size
+                    and record["mtime_ns"] == stat.st_mtime_ns):
+                names.add(name)
+        except (OSError, KeyError, TypeError):
+            pass
+    return names
 
 
 class Cancelled(Exception):
@@ -149,6 +191,7 @@ class DownloadManager:
         else:
             part.replace(final)
         os.chmod(final, 0o664)
+        _record_verified(final, entry["sha256"])
 
     def _fetch(self, download, part):
         entry = download.entry

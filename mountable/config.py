@@ -10,6 +10,8 @@ RUN_DIR = Path(os.environ.get("MOUNTABLE_RUN_DIR", "/run/mountable"))
 SOCKET_PATH = RUN_DIR / "mountable.sock"
 CONFIG_FILE = Path(os.environ.get("MOUNTABLE_CONFIG", "/etc/mountable/config.json"))
 BUNDLED_CATALOG = Path(__file__).resolve().parent.parent / "catalog" / "catalog.json"
+# Run through sudo by the app to start the service when it is not running.
+START_HELPER = Path(__file__).resolve().parent.parent / "start-service"
 
 # Group allowed to talk to the service and to manage files in IMAGES_DIR.
 ACCESS_GROUP = "users"
@@ -29,7 +31,7 @@ DEFAULTS = {
     # Where the published catalog is fetched from.
     "catalog_url": CATALOG_URL,
     # Unmount automatically this many minutes after mounting; 0 disables.
-    "auto_unmount_minutes": 0,
+    "auto_unmount_minutes": 60,
     # Mount disk images (not ISOs) writable unless told otherwise.
     "default_writable": False,
     # Image mounted when the app opens with nothing mounted; "" for none.

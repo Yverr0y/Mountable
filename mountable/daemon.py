@@ -3,8 +3,13 @@
 Runs as root and owns everything that outlives the UI: the mounted image and
 running downloads. Clients send one JSON request per connection over a Unix
 socket and get one JSON reply.
+
+It runs either all the time as a system service, or only while it is needed:
+started by the app with --exit-when-idle, it stops once the app has closed
+and nothing is mounted or downloading.
 """
 
+import argparse
 import grp
 import json
 import os
@@ -14,10 +19,10 @@ import sys
 import threading
 import time
 
-from . import catalog, drive, gadget, images
+from . import catalog, drive, gadget, images, updates
 from .config import (ACCESS_GROUP, CHOICES, IMAGES_DIR, RUN_DIR, SHARED_DIR, SOCKET_PATH,
                      load_settings, save_setting)
-from .downloads import DownloadManager
+from .downloads import ACTIVE, DownloadManager, verified_files
 
 downloads = DownloadManager()
 
@@ -33,7 +38,7 @@ def _auto_unmount_in(settings):
     """Seconds until the mount is removed automatically, or None."""
     minutes = settings["auto_unmount_minutes"]
     elapsed = gadget.mounted_seconds()
-    if not minutes or elapsed is None:
+    if not minutes or elapsed is None or gadget.TIMER_OFF.exists():
         return None
     return max(0, int(minutes * 60 - elapsed))
 
@@ -48,6 +53,8 @@ def cmd_status(_):
     state["files_drive"] = drive.info()
     state["shared_dir"] = str(SHARED_DIR)
     state["auto_unmount_in"] = _auto_unmount_in(settings) if state["mounted"] else None
+    state["auto_unmount_off"] = bool(state["mounted"]) and gadget.TIMER_OFF.exists()
+    state["update"] = updates.available()
     return state
 
 
@@ -93,6 +100,14 @@ def cmd_unmount(_):
     state = gadget.unmount()
     _sync_shared_folder()
     return state
+
+
+def cmd_keep(_):
+    """Switch auto-unmount off for the current mount; the setting is unchanged."""
+    if not gadget.mounted():
+        raise ValueError("nothing is mounted")
+    gadget.TIMER_OFF.touch()
+    return {}
 
 
 def cmd_delete(request):
@@ -141,7 +156,10 @@ def cmd_catalog(_):
     present = {i["name"] for i in images.list_images()}
     for entry in data["images"]:
         entry["file"] = catalog.final_filename(entry)
+    verified = verified_files({e["file"]: e["sha256"] for e in data["images"] if e["file"] in present})
+    for entry in data["images"]:
         entry["installed"] = entry["file"] in present
+        entry["verified"] = entry["file"] in verified
         entry["space_needed"] = catalog.space_needed(entry)
     data["can_refresh"] = bool(load_settings()["catalog_url"])
     data["checked"] = _catalog_checked
@@ -171,7 +189,16 @@ def cmd_dismiss(request):
     return {}
 
 
+def cmd_check(_):
+    """Sent by the app when it opens: look for news unless that was done lately."""
+    if time.monotonic() - _checked_at > 3600:
+        _check_now.set()
+    return {}
+
+
 _catalog_checked = ""   # when the published catalog was last fetched successfully
+_checked_at = 0.0       # when the updater last tried, on the monotonic clock
+_check_now = threading.Event()
 
 
 def _refresh_catalog(url):
@@ -180,19 +207,28 @@ def _refresh_catalog(url):
     _catalog_checked = time.strftime("%Y-%m-%d %H:%M")
 
 
-def _catalog_updater():
-    """Fetch the published catalog at startup and daily; retry sooner while offline."""
+def _updater():
+    """Fetch the published catalog and look for a new release of the app.
+
+    Runs when the service starts, once a day, and when the app opens after
+    more than an hour; while the catalog cannot be fetched it retries sooner.
+    """
+    global _checked_at
     while True:
+        _checked_at = time.monotonic()
         try:
             _refresh_catalog(load_settings()["catalog_url"])
-            time.sleep(24 * 3600)
+            wait = 24 * 3600
         except catalog.CatalogError:
-            time.sleep(10 * 60)
+            wait = 10 * 60
+        updates.check()
+        _check_now.wait(wait)
+        _check_now.clear()
 
 
 def _auto_unmounter():
     while True:
-        time.sleep(20)
+        time.sleep(5)
         try:
             if gadget.mounted() and _auto_unmount_in(load_settings()) == 0:
                 gadget.unmount()
@@ -206,8 +242,25 @@ COMMANDS = {
 }
 
 
+IDLE_EXIT = 90   # seconds with no app, mount or download before stopping
+_last_request = time.monotonic()
+
+
+def _exit_when_idle(server):
+    global _last_request
+    while True:
+        time.sleep(15)
+        if gadget.mounted() or any(d["state"] in ACTIVE for d in downloads.list()):
+            _last_request = time.monotonic()
+        elif time.monotonic() - _last_request > IDLE_EXIT:
+            server.shutdown()
+            return
+
+
 class Handler(socketserver.StreamRequestHandler):
     def handle(self):
+        global _last_request
+        _last_request = time.monotonic()
         try:
             request = json.loads(self.rfile.readline(65536))
             reply = {"ok": True, **COMMANDS[request["cmd"]](request)}
@@ -225,6 +278,10 @@ class Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
 
 
 def main():
+    parser = argparse.ArgumentParser(prog="mountable.daemon", description="Mountable service")
+    parser.add_argument("--exit-when-idle", action="store_true",
+                        help="stop once the app has closed and nothing is mounted or downloading")
+    args = parser.parse_args()
     if os.geteuid() != 0:
         sys.exit("mountable service must run as root")
     gid = grp.getgrnam(ACCESS_GROUP).gr_gid
@@ -237,14 +294,17 @@ def main():
         stale.unlink()
 
     _sync_shared_folder()
-    threading.Thread(target=_catalog_updater, daemon=True).start()
+    threading.Thread(target=_updater, daemon=True).start()
     threading.Thread(target=_auto_unmounter, daemon=True).start()
 
     SOCKET_PATH.unlink(missing_ok=True)
     with Server(str(SOCKET_PATH), Handler) as server:
         os.chown(SOCKET_PATH, 0, gid)
         os.chmod(SOCKET_PATH, 0o660)
+        if args.exit_when_idle:
+            threading.Thread(target=_exit_when_idle, args=(server,), daemon=True).start()
         server.serve_forever()
+    SOCKET_PATH.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
