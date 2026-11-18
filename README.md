@@ -1,52 +1,54 @@
 # Mountable
 
-Turns a Cardputer Zero into a USB drive that can present any disk image. Pick
-an ISO or disk image on the device, plug it into a computer, and boot from it.
+Turns a Cardputer Zero into a dynamic USB drive that can present any disk image.
+You can add your own images to your SD card or download from the provided list of image
+sources. It mounts your image as a USB drive or emulates a CD drive for older
+equipment. If you need to transfer additional files, you can enable a "files" USB drive
+that mounts alongside your image for your drivers, keys, apps, whatever really.
+
+# Features
 
 - Mount ISOs and raw disk images as a USB disk or CD-ROM, read-only or writable
-- Download images from a built-in catalog, verified by SHA-256
+- Download images from a built-in and growing catalog, verified by SHA-256
 - Mounts and downloads keep running after you leave the app
 - On-screen guidance when the Host/Slave switch is in the wrong position
 
+## Screenshots
+
+![Home screen](packaging/store/screenshots/1-home.png)
+![Connection page with a mounted image](packaging/store/screenshots/2-connect.png)
+![Image catalog](packaging/store/screenshots/4-catalog.png)
+
 ## Install
 
-On the Cardputer Zero, from a checkout of this repository:
+Each release has two packages on the
+[releases page](https://github.com/s0liton/Mountable/releases):
 
-    sudo ./install.sh
+- `mountable_<version>_arm64.deb` is the store build. Controlling the USB port
+  needs administrator rights, so the app asks for the device password when it
+  opens.
+- `mountable-full_<version>_arm64.deb` is the root build. It installs the
+  service to run all the time as root, so no password prompts.
 
-Mountable then appears in the app launcher.
+To install a downloaded package on the device:
+
+    sudo apt install ./mountable_<version>_arm64.deb
+
+To remove it:
+
+    sudo apt remove mountable
+
+Removing the app leaves your images in `/srv/mountable`.
 
 ## Use
 
-Navigate with `F` (up), `X` (down), `Z` (left) and `C` (right), or the arrow
-keys. `Enter` selects and `Esc` goes back.
+You will need to switch your Cardputer Zero into USB device mode. If you look at the USB-A port
+on the left side of the device, there is a tiny little switch above the port. 
+Flip it towards the top of the device. This is REQUIRED.
 
-Your own images go in `/srv/mountable/images`.
+Place your own images in `/srv/mountable/images` or just download them from the provided catalog.
 
-While an image is mounted the device's adb connection is paused; it comes back
-when you unmount.
+## License
 
-## Settings
-
-Settings are in the app's menu:
-
-- Auto-unmount after a set time
-- Mount disk images read-only or writable by default
-- An image to mount whenever the app opens (set from an image's options)
-- A files drive: an extra FAT32 or exFAT USB drive presented next to the
-  mounted image, or on its own, for carrying drivers and other files
-
-While the files drive is not being presented over USB, its contents are in
-`/srv/mountable/shared`. Copy files there and they are on the drive at the
-next mount; files a computer saved to the drive appear there after unmounting.
-
-## Catalog
-
-The download list is `catalog/catalog.json`. Devices fetch the published copy
-when they start and once a day, and from Settings on request, so the list can
-change without an app update. The URL is `catalog_url` in
-`/etc/mountable/config.json`; it must be reachable without a login.
-
-Check the catalog after editing it:
-
-    python3 tools/check_catalog.py --online
+Mountable is free software under the GNU General Public License, version 3.
+See [LICENSE](LICENSE).
